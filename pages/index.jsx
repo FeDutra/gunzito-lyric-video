@@ -468,6 +468,14 @@ export default function App() {
         segs = splitSegments(rawSegs, duration);
       }
 
+      // Clean existing emojis and enforce 🎶 only at the start of the first intro verse
+      if (segs && segs.length > 0) {
+        segs.forEach(s => {
+          s.text = s.text.replace(/🎶/g, "").trim();
+        });
+        segs[0].text = "🎶 " + segs[0].text;
+      }
+
       // Fix segment ends: extend each verse to cover right up to the next verse's start.
       // This prevents artificial gaps (from short word timestamps) from falsely triggering
       // the musical note emoji mid-song.
