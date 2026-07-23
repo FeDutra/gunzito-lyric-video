@@ -633,13 +633,12 @@ export default function App() {
     const lh     = fsize * 2.45;
     const centerY = lyrY + lyrH / 2 - 80;
 
-    // Find active segment index using LIVE t from RAF (not stale currentTime state)
+    // Active line is strictly the last segment whose start time has been reached.
+    // This completely eliminates gaps, skipped lines, or freezing during playback.
     let activeIdx = -1;
     if (segments.length > 0) {
-      for (let i = 0; i < segments.length; i++) {
-        const s = segments[i];
-        const nextS = segments[i + 1];
-        if (t >= s.start && (nextS ? t < nextS.start : t <= s.end + 4.0)) {
+      for (let i = segments.length - 1; i >= 0; i--) {
+        if (t >= segments[i].start) {
           activeIdx = i;
           break;
         }
