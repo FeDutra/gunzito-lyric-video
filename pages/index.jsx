@@ -118,7 +118,8 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
     let bestEndIdx = -1;
     let bestScore = -1;
 
-    const maxLookahead = Math.min(normWhisper.length, searchStartIdx + 45);
+    // Search for matching spoken words in a tight forward-only window (max 12 words ahead)
+    const maxLookahead = Math.min(normWhisper.length, searchStartIdx + 12);
 
     for (let i = searchStartIdx; i < maxLookahead; i++) {
       let score = 0;
@@ -148,10 +149,9 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
       
       let finalStart = matchStart;
       if (prevStart >= 0) {
-        // Prevent hallucinatory timestamp jumps (e.g. jumping from 2.8s to 45.3s)
-        // A consecutive verse should never be spaced more than 6.0s from the previous verse
-        if (matchStart > prevStart + 6.0) {
-          finalStart = prevStart + 2.5;
+        // Enforce smooth sequential timing between 1.8s and 4.5s max gap per verse
+        if (matchStart > prevStart + 4.5) {
+          finalStart = prevStart + 2.2;
         } else {
           finalStart = Math.max(matchStart, prevStart + 1.8);
         }
@@ -163,13 +163,14 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
         text: lineText,
         key: keyWord(lineText)
       });
-      searchStartIdx = Math.max(searchStartIdx + 1, bestStartIdx + 1);
+      // Strict forward progress: next line must search AFTER current line ends
+      searchStartIdx = bestEndIdx + 1;
     } else {
       const prevStart = result.length > 0 ? result[result.length - 1].start : (whisperWords[0] ? whisperWords[0].start : 0);
-      const finalStart = result.length > 0 ? prevStart + 2.4 : prevStart;
+      const finalStart = result.length > 0 ? prevStart + 2.2 : prevStart;
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat((finalStart + 2.2).toFixed(2)),
+        end: parseFloat((finalStart + 2.0).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
