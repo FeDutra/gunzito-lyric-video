@@ -109,7 +109,8 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
     let bestEndIdx = -1;
     let bestScore = -1;
 
-    const maxLookahead = Math.min(normWhisper.length, wIdx + 30);
+    // Search for matching sequence strictly in immediate next spoken words
+    const maxLookahead = Math.min(normWhisper.length, wIdx + cleanLineWords.length + 4);
 
     for (let i = wIdx; i < maxLookahead; i++) {
       let score = 0;
