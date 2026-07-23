@@ -620,12 +620,13 @@ export default function App() {
     const lh     = fsize * 2.45;
     const centerY = lyrY + lyrH / 2 - 80;
 
-    // Active line is strictly the last segment whose start time has been reached.
-    // This completely eliminates gaps, skipped lines, or freezing during playback.
+    // Visual reading lead-in (0.85s offset): displays the active lyric line slightly ahead
+    // of vocalization so the human eye reads the verse in perfect sync with the audio.
+    const viewTime = t + 0.85;
     let activeIdx = -1;
     if (segments.length > 0) {
       for (let i = segments.length - 1; i >= 0; i--) {
-        if (t >= segments[i].start) {
+        if (viewTime >= segments[i].start) {
           activeIdx = i;
           break;
         }
