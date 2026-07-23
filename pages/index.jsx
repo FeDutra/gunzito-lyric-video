@@ -109,23 +109,30 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
     let bestEndIdx = -1;
     let bestScore = -1;
 
-    const maxLookahead = Math.min(normWhisper.length, wIdx + 30);
+    const maxLookahead = Math.min(normWhisper.length, wIdx + 60);
 
     for (let i = wIdx; i < maxLookahead; i++) {
       let score = 0;
       let matched = 0;
+      let significantMatch = false;
+
       for (let j = 0; j < cleanLineWords.length && (i + j) < normWhisper.length; j++) {
         const target = cleanLineWords[j];
         const spoken = normWhisper[i + j].clean;
         if (target === spoken) {
+          score += target.length > 2 ? 3 : 1;
+          matched++;
+          if (target.length >= 3) significantMatch = true;
+        } else if (target.length >= 3 && spoken.length >= 3 && (target.includes(spoken) || spoken.includes(target))) {
           score += 2;
           matched++;
-        } else if (target.length >= 3 && spoken.length >= 3 && (target.includes(spoken) || spoken.includes(target))) {
-          score += 1;
-          matched++;
+          significantMatch = true;
         }
       }
-      if (score > bestScore && matched > 0) {
+      
+      const isValidMatch = significantMatch || (matched === cleanLineWords.length);
+
+      if (isValidMatch && score > bestScore) {
         bestScore = score;
         bestStartIdx = i;
         bestEndIdx = Math.min(normWhisper.length - 1, i + cleanLineWords.length - 1);
