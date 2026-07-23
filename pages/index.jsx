@@ -145,8 +145,17 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
       const matchStart = normWhisper[bestStartIdx].start;
       const matchEnd = normWhisper[bestEndIdx].end;
       const prevStart = result.length > 0 ? result[result.length - 1].start : -1;
-      // Enforce at least 1.8s spacing from previous verse start to prevent instant verse collapse
-      const finalStart = prevStart < 0 ? matchStart : Math.max(matchStart, prevStart + 1.8);
+      
+      let finalStart = matchStart;
+      if (prevStart >= 0) {
+        // Prevent hallucinatory timestamp jumps (e.g. jumping from 2.8s to 45.3s)
+        // A consecutive verse should never be spaced more than 6.0s from the previous verse
+        if (matchStart > prevStart + 6.0) {
+          finalStart = prevStart + 2.5;
+        } else {
+          finalStart = Math.max(matchStart, prevStart + 1.8);
+        }
+      }
 
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
