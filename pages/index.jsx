@@ -61,23 +61,20 @@ function normWord(w) {
     .replace(/[^a-z0-9]/g, "");
 }
 
-// Direct strict mapping: maps lines from official lyrics to exact raw Whisper word timestamps
 function alignOfficialLyricsWithWords(officialText, whisperWords) {
   if (!officialText || !officialText.trim()) return null;
+  if (!whisperWords || !whisperWords.length) return null;
 
-  // 1. Split lines, strip section tags like [Verso 1], and chunk into max 4-word verses
+  // 1. Process Official Lyrics into 4-word chunks
   const rawLines = [];
   const initialLines = officialText.split("\n");
-
   for (let line of initialLines) {
     let cleanLine = line.trim().replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim();
     if (!cleanLine) continue;
-
     const lineWords = cleanLine.split(/\s+/).filter(Boolean);
     if (lineWords.length <= 4) {
       rawLines.push(cleanLine);
     } else {
-      // Chunk into max 4-word verses so text NEVER exceeds canvas margins
       for (let i = 0; i < lineWords.length; i += 4) {
         const chunk = lineWords.slice(i, i + 4).join(" ");
         if (chunk) rawLines.push(chunk);
@@ -86,82 +83,117 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
   }
 
   if (!rawLines.length) return null;
-  if (!whisperWords || !whisperWords.length) return null;
 
-  const normWhisper = whisperWords
-    .map(w => ({ start: w.start, end: w.end, clean: normWord(w.word) }))
-    .filter(w => w.clean.length > 0);
+  // Target Words (Official Lyrics)
+  const targetWords = [];
+  for (let li = 0; li < rawLines.length; li++) {
+    const words = rawLines[li].split(/\s+/).filter(Boolean);
+    for (let w of words) {
+      const clean = normWord(w);
+      if (clean) targetWords.push({ original: w, clean, lineIdx: li });
+    }
+  }
 
-  if (!normWhisper.length) return null;
+  // Source Words (Whisper)
+  const sourceWords = whisperWords.map(w => ({ start: w.start, end: w.end, clean: normWord(w.word) })).filter(w => w.clean.length > 0);
+  if (!sourceWords.length) return null;
 
+  // Needleman-Wunsch Global Alignment
+  const N = targetWords.length;
+  const M = sourceWords.length;
+  const dp = Array(N + 1).fill(null).map(() => Array(M + 1).fill(0));
+  const ptr = Array(N + 1).fill(null).map(() => Array(M + 1).fill(0));
+  // ptr: 1 = diag, 2 = up (skip target), 3 = left (skip source)
+
+  // Penalties
+  const MATCH = 2;
+  const MISMATCH = -1;
+  const GAP_TARGET = -2; // Whisper missed a word
+  const GAP_SOURCE = -1; // Whisper hallucinated an extra word
+
+  for (let i = 1; i <= N; i++) { dp[i][0] = dp[i-1][0] + GAP_TARGET; ptr[i][0] = 2; }
+  for (let j = 1; j <= M; j++) { dp[0][j] = dp[0][j-1] + GAP_SOURCE; ptr[0][j] = 3; }
+
+  for (let i = 1; i <= N; i++) {
+    for (let j = 1; j <= M; j++) {
+      const t = targetWords[i-1].clean;
+      const s = sourceWords[j-1].clean;
+      
+      let matchScore = MISMATCH;
+      if (t === s) matchScore = MATCH;
+      else if (t.length >= 3 && s.length >= 3 && (t.includes(s) || s.includes(t))) matchScore = MATCH - 0.5;
+
+      const diag = dp[i-1][j-1] + matchScore;
+      const up = dp[i-1][j] + GAP_TARGET;
+      const left = dp[i][j-1] + GAP_SOURCE;
+
+      if (diag >= up && diag >= left) {
+        dp[i][j] = diag; ptr[i][j] = 1;
+      } else if (up >= left) {
+        dp[i][j] = up; ptr[i][j] = 2;
+      } else {
+        dp[i][j] = left; ptr[i][j] = 3;
+      }
+    }
+  }
+
+  // Backtrack
+  let i = N;
+  let j = M;
+  const alignedTargets = Array(N).fill(null); // stores index in sourceWords
+
+  while (i > 0 && j > 0) {
+    if (ptr[i][j] === 1) {
+      alignedTargets[i-1] = j-1;
+      i--; j--;
+    } else if (ptr[i][j] === 2) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+
+  // Build Results
   const result = [];
-  let wIdx = 0;
+  let prevEnd = 0;
 
   for (let li = 0; li < rawLines.length; li++) {
     const lineText = rawLines[li];
-    const lineWords = lineText.split(/\s+/).filter(Boolean);
-    const cleanLineWords = lineWords.map(normWord).filter(Boolean);
+    let firstMatchedSourceIdx = -1;
+    let lastMatchedSourceIdx = -1;
 
-    if (!cleanLineWords.length) continue;
-
-    // Search for best matching sequence starting from wIdx forward
-    let bestStartIdx = -1;
-    let bestEndIdx = -1;
-    let bestScore = -1;
-
-    const maxLookahead = Math.min(normWhisper.length, wIdx + 60);
-
-    for (let i = wIdx; i < maxLookahead; i++) {
-      let score = 0;
-      let matched = 0;
-      let significantMatch = false;
-
-      for (let j = 0; j < cleanLineWords.length && (i + j) < normWhisper.length; j++) {
-        const target = cleanLineWords[j];
-        const spoken = normWhisper[i + j].clean;
-        if (target === spoken) {
-          score += target.length > 2 ? 3 : 1;
-          matched++;
-          if (target.length >= 3) significantMatch = true;
-        } else if (target.length >= 3 && spoken.length >= 3 && (target.includes(spoken) || spoken.includes(target))) {
-          score += 2;
-          matched++;
-          significantMatch = true;
-        }
-      }
-      
-      const isValidMatch = significantMatch || (matched === cleanLineWords.length);
-
-      if (isValidMatch && score > bestScore) {
-        bestScore = score;
-        bestStartIdx = i;
-        bestEndIdx = Math.min(normWhisper.length - 1, i + cleanLineWords.length - 1);
+    for (let ti = 0; ti < targetWords.length; ti++) {
+      if (targetWords[ti].lineIdx === li && alignedTargets[ti] !== null) {
+        if (firstMatchedSourceIdx === -1) firstMatchedSourceIdx = alignedTargets[ti];
+        lastMatchedSourceIdx = Math.max(lastMatchedSourceIdx, alignedTargets[ti]);
       }
     }
 
-    if (bestStartIdx !== -1 && bestEndIdx !== -1) {
-      const matchStart = normWhisper[bestStartIdx].start;
-      const matchEnd = normWhisper[bestEndIdx].end;
-      const prevEnd = result.length > 0 ? result[result.length - 1].end : 0;
+    if (firstMatchedSourceIdx !== -1 && lastMatchedSourceIdx !== -1) {
+      const matchStart = sourceWords[firstMatchedSourceIdx].start;
+      const matchEnd = sourceWords[lastMatchedSourceIdx].end;
       
-      // Accelerator: show lyrics 150ms earlier for better reading sync, keeping a tiny 50ms gap
       const finalStart = Math.max(0, Math.max(matchStart - 0.15, prevEnd + 0.05));
-
+      const finalEnd = Math.max(matchEnd, finalStart + 0.6);
+      
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat(Math.max(matchEnd, finalStart + 0.6).toFixed(2)),
+        end: parseFloat(finalEnd.toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
-      wIdx = bestEndIdx + 1;
+      prevEnd = finalEnd;
     } else {
-      const lastEnd = result.length > 0 ? result[result.length - 1].end : normWhisper[0].start;
+      // Fallback interpolation for completely missed lines
+      const fallbackStart = prevEnd > 0 ? prevEnd + 0.1 : 0;
+      const fallbackEnd = fallbackStart + 2.0;
       result.push({
-        start: parseFloat((lastEnd + 0.1).toFixed(2)),
-        end: parseFloat((lastEnd + 2.0).toFixed(2)),
+        start: parseFloat(fallbackStart.toFixed(2)),
+        end: parseFloat(fallbackEnd.toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
+      prevEnd = fallbackEnd;
     }
   }
 
