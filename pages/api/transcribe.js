@@ -52,7 +52,9 @@ export default async function handler(req, res) {
     let finalSegments = segments;
     let isAligned = false;
 
-    if (fields.lyrics && fields.lyrics.trim().length > 0 && words.length > 0) {
+    const lyricsText = Array.isArray(fields.lyrics) ? fields.lyrics[0] : fields.lyrics;
+
+    if (lyricsText && lyricsText.trim().length > 0 && words.length > 0) {
       try {
         const rawTranscript = words.map(w => w.word).join(" ");
         const prompt = `Você é um assistente de legendagem musical. 
@@ -60,7 +62,7 @@ Aqui está a transcrição bruta do áudio (exatamente as palavras que a IA ouvi
 "${rawTranscript}"
 
 Aqui está a Letra Oficial (sua referência ESTRUTURAL de pontuação, ritmo e quebras de verso):
-"${fields.lyrics.trim()}"
+"${lyricsText.trim()}"
 
 Sua tarefa:
 Reescreva a transcrição bruta formatando-a como a Letra Oficial. Retorne um Array JSON de strings (versos).
