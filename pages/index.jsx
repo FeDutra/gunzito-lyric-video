@@ -136,7 +136,9 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
       const matchStart = normWhisper[bestStartIdx].start;
       const matchEnd = normWhisper[bestEndIdx].end;
       const prevEnd = result.length > 0 ? result[result.length - 1].end : 0;
-      const finalStart = Math.max(matchStart, prevEnd + 0.1);
+      
+      // Accelerator: show lyrics 150ms earlier for better reading sync, keeping a tiny 50ms gap
+      const finalStart = Math.max(0, Math.max(matchStart - 0.15, prevEnd + 0.05));
 
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
