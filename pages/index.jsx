@@ -65,16 +65,29 @@ function normWord(w) {
 function alignOfficialLyricsWithWords(officialText, whisperWords) {
   if (!officialText || !officialText.trim()) return null;
 
-  // 1. Get exact lines from official lyrics pasted by user (strip section tags like [Verso 1])
-  const rawLines = officialText
-    .split("\n")
-    .map(l => l.trim().replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim())
-    .filter(Boolean);
+  // 1. Split lines, strip section tags like [Verso 1], and chunk into max 4-word verses
+  const rawLines = [];
+  const initialLines = officialText.split("\n");
+
+  for (let line of initialLines) {
+    let cleanLine = line.trim().replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim();
+    if (!cleanLine) continue;
+
+    const lineWords = cleanLine.split(/\s+/).filter(Boolean);
+    if (lineWords.length <= 4) {
+      rawLines.push(cleanLine);
+    } else {
+      // Chunk into max 4-word verses so text NEVER exceeds canvas margins
+      for (let i = 0; i < lineWords.length; i += 4) {
+        const chunk = lineWords.slice(i, i + 4).join(" ");
+        if (chunk) rawLines.push(chunk);
+      }
+    }
+  }
 
   if (!rawLines.length) return null;
   if (!whisperWords || !whisperWords.length) return null;
 
-  // Prepare clean normalized whisper words array with raw timestamps intact
   const normWhisper = whisperWords
     .map(w => ({ start: w.start, end: w.end, clean: normWord(w.word) }))
     .filter(w => w.clean.length > 0);
@@ -91,43 +104,52 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
 
     if (!cleanLineWords.length) continue;
 
-    // Advance wIdx strictly forward to find the next matching word sequence
-    let startTimestamp = -1;
-    let endTimestamp = -1;
+    // Search for best matching sequence starting from wIdx forward
+    let bestStartIdx = -1;
+    let bestEndIdx = -1;
+    let bestScore = -1;
 
-    // Look ahead in normWhisper for words matching this line
-    for (let k = 0; k < cleanLineWords.length && wIdx < normWhisper.length; k++) {
-      const target = cleanLineWords[k];
-      
-      // Look for target word starting at wIdx (up to 5 words ahead)
-      let foundIdx = -1;
-      for (let s = wIdx; s < Math.min(normWhisper.length, wIdx + 5); s++) {
-        if (normWhisper[s].clean === target || normWhisper[s].clean.includes(target) || target.includes(normWhisper[s].clean)) {
-          foundIdx = s;
-          break;
+    const maxLookahead = Math.min(normWhisper.length, wIdx + 30);
+
+    for (let i = wIdx; i < maxLookahead; i++) {
+      let score = 0;
+      let matched = 0;
+      for (let j = 0; j < cleanLineWords.length && (i + j) < normWhisper.length; j++) {
+        const target = cleanLineWords[j];
+        const spoken = normWhisper[i + j].clean;
+        if (target === spoken) {
+          score += 2;
+          matched++;
+        } else if (target.length >= 3 && spoken.length >= 3 && (target.includes(spoken) || spoken.includes(target))) {
+          score += 1;
+          matched++;
         }
       }
-
-      if (foundIdx !== -1) {
-        if (startTimestamp === -1) startTimestamp = normWhisper[foundIdx].start;
-        endTimestamp = normWhisper[foundIdx].end;
-        wIdx = foundIdx + 1;
+      if (score > bestScore && matched > 0) {
+        bestScore = score;
+        bestStartIdx = i;
+        bestEndIdx = Math.min(normWhisper.length - 1, i + cleanLineWords.length - 1);
       }
     }
 
-    if (startTimestamp !== -1 && endTimestamp !== -1) {
+    if (bestStartIdx !== -1 && bestEndIdx !== -1) {
+      const matchStart = normWhisper[bestStartIdx].start;
+      const matchEnd = normWhisper[bestEndIdx].end;
+      const prevEnd = result.length > 0 ? result[result.length - 1].end : 0;
+      const finalStart = Math.max(matchStart, prevEnd + 0.1);
+
       result.push({
-        start: parseFloat(startTimestamp.toFixed(2)),
-        end: parseFloat(endTimestamp.toFixed(2)),
+        start: parseFloat(finalStart.toFixed(2)),
+        end: parseFloat(Math.max(matchEnd, finalStart + 0.6).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
+      wIdx = bestEndIdx + 1;
     } else {
-      // Fallback only if words were completely missed by Whisper
-      const lastStart = result.length > 0 ? result[result.length - 1].start : normWhisper[0].start;
+      const lastEnd = result.length > 0 ? result[result.length - 1].end : normWhisper[0].start;
       result.push({
-        start: parseFloat((lastStart + 0.1).toFixed(2)),
-        end: parseFloat((lastStart + 2.0).toFixed(2)),
+        start: parseFloat((lastEnd + 0.1).toFixed(2)),
+        end: parseFloat((lastEnd + 2.0).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
@@ -620,13 +642,11 @@ export default function App() {
     const lh     = fsize * 2.45;
     const centerY = lyrY + lyrH / 2 - 80;
 
-    // Visual reading lead-in (0.85s offset): displays the active lyric line slightly ahead
-    // of vocalization so the human eye reads the verse in perfect sync with the audio.
-    const viewTime = t + 0.85;
+    // Active line is strictly the last segment whose start time has been reached.
     let activeIdx = -1;
     if (segments.length > 0) {
       for (let i = segments.length - 1; i >= 0; i--) {
-        if (viewTime >= segments[i].start) {
+        if (t >= segments[i].start) {
           activeIdx = i;
           break;
         }
