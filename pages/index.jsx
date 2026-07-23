@@ -65,10 +65,28 @@ function normWord(w) {
 function alignOfficialLyricsWithWords(officialText, whisperWords) {
   if (!officialText || !officialText.trim()) return null;
 
-  const rawLines = officialText
-    .split("\n")
-    .map(l => l.trim())
-    .filter(l => l.length > 0 && !l.startsWith("[") && !l.startsWith("(") && !l.endsWith("]"));
+  // 1. Split lines and strip section header tags like [Verso 1], [Refrão], (Spoken), etc.
+  const rawLines = [];
+  const initialLines = officialText.split("\n");
+
+  for (let line of initialLines) {
+    let cleanLine = line.trim();
+    // Remove tags like [Verso 1], [Refrão], (Intro)
+    cleanLine = cleanLine.replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim();
+    if (!cleanLine) continue;
+
+    // Split long lines into max 4-word chunks for optimal canvas fit
+    const lineWords = cleanLine.split(/\s+/).filter(Boolean);
+    if (lineWords.length <= 4) {
+      rawLines.push(cleanLine);
+    } else {
+      // Chunk line into 3-4 word verses
+      for (let i = 0; i < lineWords.length; i += 4) {
+        const chunk = lineWords.slice(i, i + 4).join(" ");
+        if (chunk) rawLines.push(chunk);
+      }
+    }
+  }
 
   if (!rawLines.length) return null;
 
@@ -127,7 +145,7 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
       const matchStart = normWhisper[bestStartIdx].start;
       const matchEnd = normWhisper[bestEndIdx].end;
       const prevStart = result.length > 0 ? result[result.length - 1].start : -1;
-      const finalStart = Math.max(matchStart, prevStart + 0.4);
+      const finalStart = Math.max(matchStart, prevStart + 0.3);
 
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
