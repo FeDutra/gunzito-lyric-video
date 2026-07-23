@@ -643,12 +643,20 @@ export default function App() {
     const lh     = fsize * 2.45;
     const centerY = lyrY + lyrH / 2 - 80;
 
-    // Active line is strictly the last segment whose start time has been reached.
+    // Find active verse segment
     let activeIdx = -1;
     if (segments.length > 0) {
       for (let i = segments.length - 1; i >= 0; i--) {
-        if (t >= segments[i].start) {
-          activeIdx = i;
+        const s = segments[i];
+        const nextS = segments[i + 1];
+        if (t >= s.start) {
+          // If the next segment is more than 4.5s away and current time is past s.end + 3.0s,
+          // we enter an instrumental solo gap (clear activeIdx so text doesn't freeze on screen)
+          if (nextS && nextS.start - s.start > 6.0 && t > s.end + 3.0 && t < nextS.start - 1.5) {
+            activeIdx = -1;
+          } else {
+            activeIdx = i;
+          }
           break;
         }
       }
@@ -672,8 +680,7 @@ export default function App() {
         showMusicNote = true;
         noteAlpha = Math.min(1.0, (t - (lastEnd + 1.0)) / 1.0);
       } else if (activeIdx < 0) {
-        // ONLY check for instrumental solo when NO verse is active (activeIdx === -1)
-        // Find previous and next segments around current time t
+        // Show musical note 🎵 during instrumental solos (when activeIdx is cleared)
         let prevIdx = -1;
         for (let i = segments.length - 1; i >= 0; i--) {
           if (t >= segments[i].end) { prevIdx = i; break; }
@@ -681,16 +688,11 @@ export default function App() {
         if (prevIdx >= 0 && prevIdx + 1 < segments.length) {
           const curSeg = segments[prevIdx];
           const nextSeg = segments[prevIdx + 1];
-          const gapDuration = nextSeg.start - curSeg.end;
-          if (gapDuration >= 10.0) {
-            const timeInGap = t - curSeg.end;
-            if (timeInGap > 2.5 && t < nextSeg.start - 2.0) {
-              showMusicNote = true;
-              const fadeInT = timeInGap - 2.5;
-              const fadeOutT = (nextSeg.start - 2.0) - t;
-              noteAlpha = Math.min(1.0, Math.min(fadeInT / 1.0, fadeOutT / 1.0));
-            }
-          }
+          const timeInGap = t - curSeg.end;
+          const fadeInT = timeInGap - 2.0;
+          const fadeOutT = (nextSeg.start - 1.5) - t;
+          showMusicNote = true;
+          noteAlpha = Math.min(1.0, Math.min(fadeInT / 1.0, fadeOutT / 1.0));
         }
       }
     }
