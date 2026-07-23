@@ -61,51 +61,28 @@ function normWord(w) {
     .replace(/[^a-z0-9]/g, "");
 }
 
-// Fuzzy alignment matching official lyrics lines with spoken Whisper word timestamps for 100% vocal sync
+// Direct strict mapping: maps lines from official lyrics to exact raw Whisper word timestamps
 function alignOfficialLyricsWithWords(officialText, whisperWords) {
   if (!officialText || !officialText.trim()) return null;
 
-  // 1. Split lines and strip section header tags like [Verso 1], [Refrão], (Spoken), etc.
-  const rawLines = [];
-  const initialLines = officialText.split("\n");
-
-  for (let line of initialLines) {
-    let cleanLine = line.trim();
-    cleanLine = cleanLine.replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim();
-    if (!cleanLine) continue;
-
-    const lineWords = cleanLine.split(/\s+/).filter(Boolean);
-    // Keep 1-5 word verses intact (fits canvas perfectly without shrinking font)
-    if (lineWords.length <= 5) {
-      rawLines.push(cleanLine);
-    } else {
-      // For long lines (>5 words), split evenly in half so no line is left with just 1 orphan word
-      const mid = Math.ceil(lineWords.length / 2);
-      const chunk1 = lineWords.slice(0, mid).join(" ");
-      const chunk2 = lineWords.slice(mid).join(" ");
-      if (chunk1) rawLines.push(chunk1);
-      if (chunk2) rawLines.push(chunk2);
-    }
-  }
+  // 1. Get exact lines from official lyrics pasted by user (strip section tags like [Verso 1])
+  const rawLines = officialText
+    .split("\n")
+    .map(l => l.trim().replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim())
+    .filter(Boolean);
 
   if (!rawLines.length) return null;
+  if (!whisperWords || !whisperWords.length) return null;
 
-  if (!whisperWords || !whisperWords.length) {
-    return rawLines.map((lineText, idx) => ({
-      start: parseFloat((idx * 3.0).toFixed(2)),
-      end: parseFloat(((idx + 1) * 3.0).toFixed(2)),
-      text: lineText,
-      key: keyWord(lineText)
-    }));
-  }
+  // Prepare clean normalized whisper words array with raw timestamps intact
+  const normWhisper = whisperWords
+    .map(w => ({ start: w.start, end: w.end, clean: normWord(w.word) }))
+    .filter(w => w.clean.length > 0);
 
-  const normWhisper = whisperWords.map(w => ({
-    ...w,
-    clean: normWord(w.word)
-  })).filter(w => w.clean.length > 0);
+  if (!normWhisper.length) return null;
 
   const result = [];
-  let searchStartIdx = 0;
+  let wIdx = 0;
 
   for (let li = 0; li < rawLines.length; li++) {
     const lineText = rawLines[li];
@@ -114,62 +91,43 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
 
     if (!cleanLineWords.length) continue;
 
-    let bestStartIdx = -1;
-    let bestEndIdx = -1;
-    let bestScore = -1;
+    // Advance wIdx strictly forward to find the next matching word sequence
+    let startTimestamp = -1;
+    let endTimestamp = -1;
 
-    // Search for matching spoken words in a tight forward window (max 15 words ahead)
-    const maxLookahead = Math.min(normWhisper.length, searchStartIdx + 15);
-
-    for (let i = searchStartIdx; i < maxLookahead; i++) {
-      let score = 0;
-      let matched = 0;
-      for (let j = 0; j < cleanLineWords.length && (i + j) < normWhisper.length; j++) {
-        const target = cleanLineWords[j];
-        const spoken = normWhisper[i + j].clean;
-        if (target === spoken) {
-          score += 2;
-          matched++;
-        } else if (target.length >= 3 && spoken.length >= 3 && (target.includes(spoken) || spoken.includes(target))) {
-          score += 1;
-          matched++;
+    // Look ahead in normWhisper for words matching this line
+    for (let k = 0; k < cleanLineWords.length && wIdx < normWhisper.length; k++) {
+      const target = cleanLineWords[k];
+      
+      // Look for target word starting at wIdx (up to 5 words ahead)
+      let foundIdx = -1;
+      for (let s = wIdx; s < Math.min(normWhisper.length, wIdx + 5); s++) {
+        if (normWhisper[s].clean === target || normWhisper[s].clean.includes(target) || target.includes(normWhisper[s].clean)) {
+          foundIdx = s;
+          break;
         }
       }
-      if (score > bestScore && matched > 0) {
-        bestScore = score;
-        bestStartIdx = i;
-        bestEndIdx = Math.min(normWhisper.length - 1, i + cleanLineWords.length - 1);
+
+      if (foundIdx !== -1) {
+        if (startTimestamp === -1) startTimestamp = normWhisper[foundIdx].start;
+        endTimestamp = normWhisper[foundIdx].end;
+        wIdx = foundIdx + 1;
       }
     }
 
-    if (bestStartIdx !== -1 && bestEndIdx !== -1) {
-      const matchStart = normWhisper[bestStartIdx].start;
-      const matchEnd = normWhisper[bestEndIdx].end;
-      const prevStart = result.length > 0 ? result[result.length - 1].start : -1;
-      
-      // Use exact Whisper start timestamp, enforcing minimal 0.6s step from previous line so lines snap in real time
-      let finalStart = matchStart;
-      if (prevStart >= 0) {
-        if (matchStart < prevStart + 0.6) {
-          finalStart = prevStart + 0.6;
-        } else if (matchStart > prevStart + 6.0) {
-          finalStart = prevStart + 2.4;
-        }
-      }
-
+    if (startTimestamp !== -1 && endTimestamp !== -1) {
       result.push({
-        start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat(Math.max(matchEnd, finalStart + 1.2).toFixed(2)),
+        start: parseFloat(startTimestamp.toFixed(2)),
+        end: parseFloat(endTimestamp.toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
-      searchStartIdx = bestEndIdx + 1;
     } else {
-      const prevStart = result.length > 0 ? result[result.length - 1].start : (whisperWords[0] ? whisperWords[0].start : 0);
-      const finalStart = result.length > 0 ? prevStart + 2.0 : prevStart;
+      // Fallback only if words were completely missed by Whisper
+      const lastStart = result.length > 0 ? result[result.length - 1].start : normWhisper[0].start;
       result.push({
-        start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat((finalStart + 1.8).toFixed(2)),
+        start: parseFloat((lastStart + 0.1).toFixed(2)),
+        end: parseFloat((lastStart + 2.0).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
