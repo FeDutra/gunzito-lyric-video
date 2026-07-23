@@ -1,0 +1,3 @@
+env:
+  - variable: GROQ_API_KEY
+    secret: GROQ_API_KEY
