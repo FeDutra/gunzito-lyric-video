@@ -656,18 +656,22 @@ export default function App() {
         // Outro instrumental: show musical note 🎵
         showMusicNote = true;
         noteAlpha = Math.min(1.0, (t - (lastEnd + 1.0)) / 1.0);
-      } else if (activeIdx >= 0) {
-        // Check if there is a genuine long instrumental solo (gap >= 15s start-to-start)
-        const curSeg = segments[activeIdx];
-        const nextSeg = segments[activeIdx + 1];
-        if (nextSeg) {
-          // Use start-to-start gap to avoid false positives from short word-end timestamps
-          const totalGapDuration = nextSeg.start - curSeg.start;
-          if (totalGapDuration >= 15.0) {
+      } else if (activeIdx < 0) {
+        // ONLY check for instrumental solo when NO verse is active (activeIdx === -1)
+        // Find previous and next segments around current time t
+        let prevIdx = -1;
+        for (let i = segments.length - 1; i >= 0; i--) {
+          if (t >= segments[i].end) { prevIdx = i; break; }
+        }
+        if (prevIdx >= 0 && prevIdx + 1 < segments.length) {
+          const curSeg = segments[prevIdx];
+          const nextSeg = segments[prevIdx + 1];
+          const gapDuration = nextSeg.start - curSeg.end;
+          if (gapDuration >= 10.0) {
             const timeInGap = t - curSeg.end;
-            if (timeInGap > 3.0 && t < nextSeg.start - 2.0) {
+            if (timeInGap > 2.5 && t < nextSeg.start - 2.0) {
               showMusicNote = true;
-              const fadeInT = timeInGap - 3.0;
+              const fadeInT = timeInGap - 2.5;
               const fadeOutT = (nextSeg.start - 2.0) - t;
               noteAlpha = Math.min(1.0, Math.min(fadeInT / 1.0, fadeOutT / 1.0));
             }
@@ -802,7 +806,7 @@ export default function App() {
         const webmBlob = new Blob(chunks.current, { type: mime });
 
         const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-        const { fetchFile } = await import("@ffmpeg/util");
+        const { toBlobURL, fetchFile } = await import("@ffmpeg/util");
 
         const ffmpeg = new FFmpeg();
 
@@ -810,11 +814,11 @@ export default function App() {
           setExpPct(Math.round(5 + progress * 90));
         });
 
-        // Load FFmpeg WASM from local public/ via direct URL (COOP/COEP headers already set)
-        const base = window.location.origin + "/ffmpeg";
+        // Load FFmpeg WASM via toBlobURL from CDN (works in both dev and production hosting)
+        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
         await ffmpeg.load({
-          coreURL: base + "/ffmpeg-core.js",
-          wasmURL: base + "/ffmpeg-core.wasm",
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
         });
 
         // Write canvas video + original audio to FFmpeg virtual FS
