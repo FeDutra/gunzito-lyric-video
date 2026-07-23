@@ -1,0 +1,21 @@
+{
+  "name": "gunzito-lyric-video",
+  "version": "1.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "node scripts/copy-ffmpeg.js && next build",
+    "start": "next start",
+    "postinstall": "node scripts/copy-ffmpeg.js"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.6",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "formidable": "3.5.1",
+    "next": "14.2.3",
+    "openai": "4.47.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}

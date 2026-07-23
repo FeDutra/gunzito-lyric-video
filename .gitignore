@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Environment variables — NUNCA subir para o Git!
+.env
+.env.local
+.env.*.local
+
+# Large binary outputs
+*.webm
+*.mp4
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# FFmpeg WASM (grandes, regenerar com npm install)
+public/ffmpeg/ffmpeg-core.wasm
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
