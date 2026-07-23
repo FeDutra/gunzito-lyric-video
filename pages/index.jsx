@@ -71,20 +71,20 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
 
   for (let line of initialLines) {
     let cleanLine = line.trim();
-    // Remove tags like [Verso 1], [Refrão], (Intro)
     cleanLine = cleanLine.replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim();
     if (!cleanLine) continue;
 
-    // Split long lines into max 4-word chunks for optimal canvas fit
     const lineWords = cleanLine.split(/\s+/).filter(Boolean);
-    if (lineWords.length <= 4) {
+    // Keep 1-5 word verses intact (fits canvas perfectly without shrinking font)
+    if (lineWords.length <= 5) {
       rawLines.push(cleanLine);
     } else {
-      // Chunk line into 3-4 word verses
-      for (let i = 0; i < lineWords.length; i += 4) {
-        const chunk = lineWords.slice(i, i + 4).join(" ");
-        if (chunk) rawLines.push(chunk);
-      }
+      // For long lines (>5 words), split evenly in half so no line is left with just 1 orphan word
+      const mid = Math.ceil(lineWords.length / 2);
+      const chunk1 = lineWords.slice(0, mid).join(" ");
+      const chunk2 = lineWords.slice(mid).join(" ");
+      if (chunk1) rawLines.push(chunk1);
+      if (chunk2) rawLines.push(chunk2);
     }
   }
 
@@ -118,8 +118,8 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
     let bestEndIdx = -1;
     let bestScore = -1;
 
-    // Search for matching spoken words in a tight forward-only window (max 12 words ahead)
-    const maxLookahead = Math.min(normWhisper.length, searchStartIdx + 12);
+    // Search for matching spoken words in a tight forward window (max 15 words ahead)
+    const maxLookahead = Math.min(normWhisper.length, searchStartIdx + 15);
 
     for (let i = searchStartIdx; i < maxLookahead; i++) {
       let score = 0;
@@ -147,30 +147,29 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
       const matchEnd = normWhisper[bestEndIdx].end;
       const prevStart = result.length > 0 ? result[result.length - 1].start : -1;
       
+      // Use exact Whisper start timestamp, enforcing minimal 0.6s step from previous line so lines snap in real time
       let finalStart = matchStart;
       if (prevStart >= 0) {
-        // Enforce smooth sequential timing between 1.8s and 4.5s max gap per verse
-        if (matchStart > prevStart + 4.5) {
-          finalStart = prevStart + 2.2;
-        } else {
-          finalStart = Math.max(matchStart, prevStart + 1.8);
+        if (matchStart < prevStart + 0.6) {
+          finalStart = prevStart + 0.6;
+        } else if (matchStart > prevStart + 6.0) {
+          finalStart = prevStart + 2.4;
         }
       }
 
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat(Math.max(matchEnd, finalStart + 1.6).toFixed(2)),
+        end: parseFloat(Math.max(matchEnd, finalStart + 1.2).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
-      // Strict forward progress: next line must search AFTER current line ends
       searchStartIdx = bestEndIdx + 1;
     } else {
       const prevStart = result.length > 0 ? result[result.length - 1].start : (whisperWords[0] ? whisperWords[0].start : 0);
-      const finalStart = result.length > 0 ? prevStart + 2.2 : prevStart;
+      const finalStart = result.length > 0 ? prevStart + 2.0 : prevStart;
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat((finalStart + 2.0).toFixed(2)),
+        end: parseFloat((finalStart + 1.8).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
