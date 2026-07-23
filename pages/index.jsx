@@ -211,11 +211,17 @@ function splitSegmentsFromWords(wordsList) {
     const chunk = wordsList.slice(i * chunkSize, (i + 1) * chunkSize);
     if (!chunk.length) continue;
     const text = chunk.map(w => w.word).join(" ");
-    const start = chunk[0].start;
+    
+    // Apply 150ms reading accelerator so text appears slightly before the vocal
+    let rawStart = chunk[0].start;
+    const prevEnd = result.length > 0 ? result[result.length - 1].end : 0;
+    const finalStart = Math.max(0, Math.max(rawStart - 0.15, prevEnd + 0.05));
+    
     const end = chunk[chunk.length - 1].end;
+    
     result.push({
-      start: parseFloat(start.toFixed(2)),
-      end: parseFloat(Math.max(end, start + 0.6).toFixed(2)),
+      start: parseFloat(finalStart.toFixed(2)),
+      end: parseFloat(Math.max(end, finalStart + 0.6).toFixed(2)),
       text: text,
       key: keyWord(text),
     });
@@ -450,17 +456,10 @@ export default function App() {
           text: s.text,
           key: keyWord(s.text)
         }));
-      } else if (officialLyrics && officialLyrics.trim()) {
-        segs = alignOfficialLyricsWithWords(officialLyrics.trim(), data.words);
-        if (segs) {
-          segs = enforceMax4Words(segs, duration);
-        }
-      }
-      
-      if (!segs && data.words && data.words.length > 0) {
+      } else if (data.words && data.words.length > 0) {
         segs = splitSegmentsFromWords(data.words);
-      } else if (!segs) {
-        const rawSegs = (data.segments || []).map(s => ({
+      } else if (data.segments && data.segments.length > 0) {
+        const rawSegs = data.segments.map(s => ({
           start: s.start,
           end:   s.end,
           text:  s.text,
