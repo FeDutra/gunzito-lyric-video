@@ -47,13 +47,18 @@ function dominantColor(img) {
     const d = x.getImageData(0,0,16,16).data;
     let r=0,g=0,b=0,n=0;
     for (let i=0;i<d.length;i+=4){r+=d[i];g+=d[i+1];b+=d[i+2];n++;}
-    // darken it for use as background
     return `rgb(${Math.round(r/n*0.35)},${Math.round(g/n*0.35)},${Math.round(b/n*0.35)})`;
   } catch { return "#111"; }
 }
 
 function normWord(w) {
-  return w.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+  if (!w) return "";
+  return w
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[“”"'`«»…\.,!\?:\;\(\)\[\]\{\}\-–—]/g, "")
+    .replace(/[^a-z0-9]/g, "");
 }
 
 // Fuzzy alignment matching official lyrics lines with spoken Whisper word timestamps for 100% vocal sync
@@ -95,7 +100,7 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
     let bestEndIdx = -1;
     let bestScore = -1;
 
-    const maxLookahead = Math.min(normWhisper.length, searchStartIdx + 35);
+    const maxLookahead = Math.min(normWhisper.length, searchStartIdx + 45);
 
     for (let i = searchStartIdx; i < maxLookahead; i++) {
       let score = 0;
@@ -106,7 +111,7 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
         if (target === spoken) {
           score += 2;
           matched++;
-        } else if (target.includes(spoken) || spoken.includes(target)) {
+        } else if (target.length >= 3 && spoken.length >= 3 && (target.includes(spoken) || spoken.includes(target))) {
           score += 1;
           matched++;
         }
@@ -121,19 +126,21 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
     if (bestStartIdx !== -1 && bestEndIdx !== -1) {
       const matchStart = normWhisper[bestStartIdx].start;
       const matchEnd = normWhisper[bestEndIdx].end;
+      const prevStart = result.length > 0 ? result[result.length - 1].start : -1;
+      const finalStart = Math.max(matchStart, prevStart + 0.4);
 
       result.push({
-        start: parseFloat(matchStart.toFixed(2)),
-        end: parseFloat(Math.max(matchEnd, matchStart + 0.6).toFixed(2)),
+        start: parseFloat(finalStart.toFixed(2)),
+        end: parseFloat(Math.max(matchEnd, finalStart + 0.8).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
-      searchStartIdx = bestEndIdx + 1;
+      searchStartIdx = Math.max(searchStartIdx + 1, bestStartIdx + 1);
     } else {
       const prevEnd = result.length > 0 ? result[result.length - 1].end : (whisperWords[0] ? whisperWords[0].start : 0);
       result.push({
         start: parseFloat((prevEnd + 0.1).toFixed(2)),
-        end: parseFloat((prevEnd + 2.2).toFixed(2)),
+        end: parseFloat((prevEnd + 2.5).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
