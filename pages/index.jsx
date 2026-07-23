@@ -61,20 +61,33 @@ function normWord(w) {
     .replace(/[^a-z0-9]/g, "");
 }
 
-// Universal robust alignment: matches official lyrics lines 1-to-1 to Whisper word timestamps
+// Direct strict mapping: maps lines from official lyrics to exact raw Whisper word timestamps
 function alignOfficialLyricsWithWords(officialText, whisperWords) {
   if (!officialText || !officialText.trim()) return null;
+
+  // 1. Split lines, strip section tags like [Verso 1], and chunk into max 4-word verses
+  const rawLines = [];
+  const initialLines = officialText.split("\n");
+
+  for (let line of initialLines) {
+    let cleanLine = line.trim().replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim();
+    if (!cleanLine) continue;
+
+    const lineWords = cleanLine.split(/\s+/).filter(Boolean);
+    if (lineWords.length <= 4) {
+      rawLines.push(cleanLine);
+    } else {
+      // Chunk into max 4-word verses so text NEVER exceeds canvas margins
+      for (let i = 0; i < lineWords.length; i += 4) {
+        const chunk = lineWords.slice(i, i + 4).join(" ");
+        if (chunk) rawLines.push(chunk);
+      }
+    }
+  }
+
+  if (!rawLines.length) return null;
   if (!whisperWords || !whisperWords.length) return null;
 
-  // 1. Respect user's exact line breaks (strip section headers like [Verso 1])
-  const userLines = officialText
-    .split("\n")
-    .map(l => l.trim().replace(/^\[.*?\]/g, "").replace(/^\(.*?\)/g, "").trim())
-    .filter(Boolean);
-
-  if (!userLines.length) return null;
-
-  // Clean Whisper words array with exact timestamps intact
   const normWhisper = whisperWords
     .map(w => ({ start: w.start, end: w.end, clean: normWord(w.word) }))
     .filter(w => w.clean.length > 0);
@@ -82,22 +95,21 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
   if (!normWhisper.length) return null;
 
   const result = [];
-  let wIdx = 0; // Monotonic pointer: ONLY moves forward through the audio
+  let wIdx = 0;
 
-  for (let li = 0; li < userLines.length; li++) {
-    const lineText = userLines[li];
+  for (let li = 0; li < rawLines.length; li++) {
+    const lineText = rawLines[li];
     const lineWords = lineText.split(/\s+/).filter(Boolean);
     const cleanLineWords = lineWords.map(normWord).filter(Boolean);
 
     if (!cleanLineWords.length) continue;
 
+    // Search for best matching sequence starting from wIdx forward
     let bestStartIdx = -1;
     let bestEndIdx = -1;
     let bestScore = -1;
 
-    // Search window: look ahead in normWhisper starting from current wIdx
-    // Search window is dynamically scaled based on line length + safety buffer
-    const maxLookahead = Math.min(normWhisper.length, wIdx + cleanLineWords.length + 15);
+    const maxLookahead = Math.min(normWhisper.length, wIdx + 30);
 
     for (let i = wIdx; i < maxLookahead; i++) {
       let score = 0;
@@ -124,24 +136,20 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
       const matchStart = normWhisper[bestStartIdx].start;
       const matchEnd = normWhisper[bestEndIdx].end;
       const prevEnd = result.length > 0 ? result[result.length - 1].end : 0;
-      const finalStart = Math.max(matchStart, prevEnd + 0.05);
+      const finalStart = Math.max(matchStart, prevEnd + 0.1);
 
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat(Math.max(matchEnd, finalStart + 0.5).toFixed(2)),
+        end: parseFloat(Math.max(matchEnd, finalStart + 0.6).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
-      // Move pointer forward to the word AFTER this match
       wIdx = bestEndIdx + 1;
     } else {
-      // Fallback if line was skipped/not recognized by Whisper
-      const lastEnd = result.length > 0 ? result[result.length - 1].end : (normWhisper[wIdx] ? normWhisper[wIdx].start : 0);
-      const fallbackStart = parseFloat((lastEnd + 0.1).toFixed(2));
-      const fallbackEnd = parseFloat((fallbackStart + 2.0).toFixed(2));
+      const lastEnd = result.length > 0 ? result[result.length - 1].end : normWhisper[0].start;
       result.push({
-        start: fallbackStart,
-        end: fallbackEnd,
+        start: parseFloat((lastEnd + 0.1).toFixed(2)),
+        end: parseFloat((lastEnd + 2.0).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
@@ -394,12 +402,21 @@ export default function App() {
       if (!r.ok) throw new Error(data.error || "Erro " + r.status);
 
       let segs = null;
-      if (officialLyrics && officialLyrics.trim()) {
+      if (data.isAligned && data.segments && data.segments.length > 0) {
+        segs = data.segments.map(s => ({
+          start: s.start,
+          end: s.end,
+          text: s.text,
+          key: keyWord(s.text)
+        }));
+      } else if (officialLyrics && officialLyrics.trim()) {
         segs = alignOfficialLyricsWithWords(officialLyrics.trim(), data.words);
+        if (segs) {
+          segs = enforceMax4Words(segs, duration);
+        }
       }
-      if (!segs && data.isAligned && data.segments && data.segments.length > 0) {
-        segs = enforceMax4Words(data.segments, duration);
-      } else if (!segs && data.words && data.words.length > 0) {
+      
+      if (!segs && data.words && data.words.length > 0) {
         segs = splitSegmentsFromWords(data.words);
       } else if (!segs) {
         const rawSegs = (data.segments || []).map(s => ({
@@ -634,20 +651,12 @@ export default function App() {
     const lh     = fsize * 2.45;
     const centerY = lyrY + lyrH / 2 - 80;
 
-    // Find active verse segment
+    // Active line is strictly the last segment whose start time has been reached.
     let activeIdx = -1;
     if (segments.length > 0) {
       for (let i = segments.length - 1; i >= 0; i--) {
-        const s = segments[i];
-        const nextS = segments[i + 1];
-        if (t >= s.start) {
-          // If the next segment is more than 4.5s away and current time is past s.end + 3.0s,
-          // we enter an instrumental solo gap (clear activeIdx so text doesn't freeze on screen)
-          if (nextS && nextS.start - s.start > 6.0 && t > s.end + 3.0 && t < nextS.start - 1.5) {
-            activeIdx = -1;
-          } else {
-            activeIdx = i;
-          }
+        if (t >= segments[i].start) {
+          activeIdx = i;
           break;
         }
       }
@@ -671,7 +680,8 @@ export default function App() {
         showMusicNote = true;
         noteAlpha = Math.min(1.0, (t - (lastEnd + 1.0)) / 1.0);
       } else if (activeIdx < 0) {
-        // Show musical note 🎵 during instrumental solos (when activeIdx is cleared)
+        // ONLY check for instrumental solo when NO verse is active (activeIdx === -1)
+        // Find previous and next segments around current time t
         let prevIdx = -1;
         for (let i = segments.length - 1; i >= 0; i--) {
           if (t >= segments[i].end) { prevIdx = i; break; }
@@ -679,11 +689,16 @@ export default function App() {
         if (prevIdx >= 0 && prevIdx + 1 < segments.length) {
           const curSeg = segments[prevIdx];
           const nextSeg = segments[prevIdx + 1];
-          const timeInGap = t - curSeg.end;
-          const fadeInT = timeInGap - 2.0;
-          const fadeOutT = (nextSeg.start - 1.5) - t;
-          showMusicNote = true;
-          noteAlpha = Math.min(1.0, Math.min(fadeInT / 1.0, fadeOutT / 1.0));
+          const gapDuration = nextSeg.start - curSeg.end;
+          if (gapDuration >= 10.0) {
+            const timeInGap = t - curSeg.end;
+            if (timeInGap > 2.5 && t < nextSeg.start - 2.0) {
+              showMusicNote = true;
+              const fadeInT = timeInGap - 2.5;
+              const fadeOutT = (nextSeg.start - 2.0) - t;
+              noteAlpha = Math.min(1.0, Math.min(fadeInT / 1.0, fadeOutT / 1.0));
+            }
+          }
         }
       }
     }
