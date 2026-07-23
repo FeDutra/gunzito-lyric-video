@@ -145,20 +145,22 @@ function alignOfficialLyricsWithWords(officialText, whisperWords) {
       const matchStart = normWhisper[bestStartIdx].start;
       const matchEnd = normWhisper[bestEndIdx].end;
       const prevStart = result.length > 0 ? result[result.length - 1].start : -1;
-      const finalStart = Math.max(matchStart, prevStart + 0.3);
+      // Enforce at least 1.8s spacing from previous verse start to prevent instant verse collapse
+      const finalStart = prevStart < 0 ? matchStart : Math.max(matchStart, prevStart + 1.8);
 
       result.push({
         start: parseFloat(finalStart.toFixed(2)),
-        end: parseFloat(Math.max(matchEnd, finalStart + 0.8).toFixed(2)),
+        end: parseFloat(Math.max(matchEnd, finalStart + 1.6).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
       searchStartIdx = Math.max(searchStartIdx + 1, bestStartIdx + 1);
     } else {
-      const prevEnd = result.length > 0 ? result[result.length - 1].end : (whisperWords[0] ? whisperWords[0].start : 0);
+      const prevStart = result.length > 0 ? result[result.length - 1].start : (whisperWords[0] ? whisperWords[0].start : 0);
+      const finalStart = result.length > 0 ? prevStart + 2.4 : prevStart;
       result.push({
-        start: parseFloat((prevEnd + 0.1).toFixed(2)),
-        end: parseFloat((prevEnd + 2.5).toFixed(2)),
+        start: parseFloat(finalStart.toFixed(2)),
+        end: parseFloat((finalStart + 2.2).toFixed(2)),
         text: lineText,
         key: keyWord(lineText)
       });
