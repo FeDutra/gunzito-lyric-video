@@ -861,17 +861,17 @@ export default function App() {
 
     // 1. Capture canvas video stream ONLY — original audio muxed in FFmpeg step
     const vs = canvas.captureStream(30);
-    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-      ? "video/webm;codecs=vp9"
-      : MediaRecorder.isTypeSupported("video/webm;codecs=vp8")
-      ? "video/webm;codecs=vp8"
-      : "video/webm";
+    let mime = "video/webm;codecs=vp9";
+    try {
+      if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm;codecs=vp8";
+      if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm";
+      if (!MediaRecorder.isTypeSupported(mime)) mime = "video/mp4"; // Safari iOS fallback
+      
+      const rec = new MediaRecorder(vs, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+      rec.ondataavailable = e => { if (e.data.size > 0) chunks.current.push(e.data); };
 
-    const rec = new MediaRecorder(vs, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
-    rec.ondataavailable = e => { if (e.data.size > 0) chunks.current.push(e.data); };
-
-    rec.onstop = async () => {
-      setTranscoding(true);
+      rec.onstop = async () => {
+        setTranscoding(true);
       setExpPct(5);
       try {
         const webmBlob = new Blob(chunks.current, { type: mime });
@@ -946,6 +946,12 @@ export default function App() {
       if (a) { a.pause(); a.currentTime = 0; }
       setPlaying(false);
     }, (dur + 1.0) * 1000);
+    } catch (e) {
+      console.error(e);
+      alert("❌ O seu navegador não suporta a exportação nativa de vídeo (MediaRecorder) neste formato.\\nTente usar o Google Chrome no computador.\\nErro: " + e.message);
+      setExporting(false);
+      setTranscoding(false);
+    }
   };
 
   // ── UI ────────────────────────────────────────────────────────────────────
