@@ -7,7 +7,7 @@
 const fs   = require("fs");
 const path = require("path");
 
-const src  = path.join(__dirname, "..", "node_modules", "@ffmpeg", "core", "dist", "esm");
+const src  = path.join(__dirname, "..", "node_modules", "@ffmpeg", "core", "dist", "umd");
 const dest = path.join(__dirname, "..", "public", "ffmpeg");
 
 const files = ["ffmpeg-core.js", "ffmpeg-core.wasm"];

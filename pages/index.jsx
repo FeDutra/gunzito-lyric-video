@@ -1043,37 +1043,49 @@ export default function App() {
           const webmBlob = new Blob(chunks.current, { type: mime });
 
           const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-          const { toBlobURL, fetchFile } = await import("@ffmpeg/util");
+          const { fetchFile } = await import("@ffmpeg/util");
 
           ffmpeg = new FFmpeg();
 
           ffmpeg.on("log", ({ message }) => {
-            console.log("[FFmpeg Log]", message);
+            console.log("[FFmpeg]", message);
           });
 
           ffmpeg.on("progress", ({ progress }) => {
             setExpPct(Math.round(5 + progress * 90));
           });
 
-          // Load FFmpeg WASM from own domain
           const baseURL = `${window.location.origin}/ffmpeg`;
-          console.log("Iniciando carregamento do FFmpeg...");
+          console.log("FFmpeg baseURL:", baseURL);
+          console.log("crossOriginIsolated:", window.crossOriginIsolated);
+
+          if (!window.crossOriginIsolated) {
+            throw new Error(
+              "O navegador não está em contexto cross-origin isolated. Verifique os cabeçalhos COOP e COEP."
+            );
+          }
+
+          console.log("Carregando FFmpeg...");
           await ffmpeg.load({
-            coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-            wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+            coreURL: `${baseURL}/ffmpeg-core.js`,
+            wasmURL: `${baseURL}/ffmpeg-core.wasm`,
           });
           console.log("FFmpeg carregado com sucesso.");
 
+          const audioExt = audioFile.name.split('.').pop() || "mp3";
+          const audioVirtualName = `audio.${audioExt}`;
+
           console.log("Escrevendo arquivos no sistema virtual do FFmpeg...");
           await ffmpeg.writeFile(tempVideoFile, await fetchFile(webmBlob));
-          await ffmpeg.writeFile("audio.dat",  await fetchFile(audioFile));
+          await ffmpeg.writeFile(audioVirtualName, await fetchFile(audioFile));
 
           console.log("Executando mixagem do FFmpeg...");
           await ffmpeg.exec([
             "-i", tempVideoFile,
-            "-i", "audio.dat",
+            "-i", audioVirtualName,
             "-map", "0:v:0",
             "-map", "1:a:0",
+            "-r", "30",
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-crf", "18",
@@ -1103,13 +1115,9 @@ export default function App() {
           setExpPct(0);
         } finally {
           if (ffmpeg) {
-            try {
-              await ffmpeg.deleteFile(tempVideoFile);
-              await ffmpeg.deleteFile("audio.dat");
-              await ffmpeg.deleteFile("resultado.mp4");
-            } catch (cleanupErr) {
-              console.warn("Aviso ao limpar arquivos virtuais do FFmpeg:", cleanupErr);
-            }
+            try { await ffmpeg.deleteFile(tempVideoFile); } catch (cleanupErr) {}
+            try { await ffmpeg.deleteFile(audioVirtualName); } catch (cleanupErr) {}
+            try { await ffmpeg.deleteFile("resultado.mp4"); } catch (cleanupErr) {}
           }
           setTranscoding(false);
           setExporting(false);
