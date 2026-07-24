@@ -61,6 +61,63 @@ function normWord(w) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+function layoutLyricText(ctx, text, maxWidth, baseFontSize, fontName, fontWeight) {
+  const MIN_FONT_SCALE = 0.72;
+  
+  for (let scale = 1.0; scale >= MIN_FONT_SCALE; scale -= 0.04) {
+    const fontSize = baseFontSize * scale;
+    ctx.font = `${fontWeight} ${fontSize}px ${fontName}`;
+    
+    const width = ctx.measureText(text).width;
+    if (width <= maxWidth) {
+      return { lines: [text], fontSize };
+    }
+    
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length > 1) {
+      let bestSplit = 1;
+      let minDiff = Infinity;
+      
+      for (let split = 1; split < words.length; split++) {
+        const line1 = words.slice(0, split).join(" ");
+        const line2 = words.slice(split).join(" ");
+        
+        const w1 = ctx.measureText(line1).width;
+        const w2 = ctx.measureText(line2).width;
+        
+        if (w1 <= maxWidth && w2 <= maxWidth) {
+          const diff = Math.abs(w1 - w2);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestSplit = split;
+          }
+        }
+      }
+      
+      if (minDiff !== Infinity) {
+        const line1 = words.slice(0, bestSplit).join(" ");
+        const line2 = words.slice(bestSplit).join(" ");
+        return { lines: [line1, line2], fontSize };
+      }
+    }
+  }
+  
+  const fontSize = baseFontSize * MIN_FONT_SCALE;
+  ctx.font = `${fontWeight} ${fontSize}px ${fontName}`;
+  const words = text.split(/\s+/).filter(Boolean);
+  
+  if (words.length >= 3) {
+    const n = words.length;
+    const chunk = Math.ceil(n / 3);
+    const line1 = words.slice(0, chunk).join(" ");
+    const line2 = words.slice(chunk, chunk * 2).join(" ");
+    const line3 = words.slice(chunk * 2).join(" ");
+    return { lines: [line1, line2, line3].filter(Boolean), fontSize };
+  }
+  
+  return { lines: [text], fontSize };
+}
+
 function alignOfficialLyricsWithWords(officialText, whisperWords) {
   if (!officialText || !officialText.trim()) return null;
   if (!whisperWords || !whisperWords.length) return null;
@@ -768,31 +825,70 @@ export default function App() {
     }
 
     if (activeIdx >= 0 && segments.length > 0) {
-      const isCaps   = font === "HELVETICA_CAPS";
+      const isCaps = font === "HELVETICA_CAPS";
       const fontName = "'Helvetica Neue', Helvetica, Arial, sans-serif";
+      const fontWeight = isCaps ? "900" : "500";
+      const safeWidth = w * 0.84; // Safe width relative to canvas width
+      const lineSpacing = fsize * 1.35;
+      const blockGap = fsize * 1.1;
 
-      const drawLine = (segIndex, yPos, alpha) => {
-        if (segIndex < 0 || segIndex >= segments.length) return;
-        const seg = segments[segIndex];
-        const drawText = isCaps ? seg.text.toUpperCase() : seg.text;
+      // Helper to compute layout for a segment
+      const getLayout = (idx) => {
+        if (idx < 0 || idx >= segments.length) return null;
+        const seg = segments[idx];
+        const rawText = isCaps ? seg.text.toUpperCase() : seg.text;
+        return {
+          ...layoutLyricText(ctx, rawText, safeWidth, fsize, fontName, fontWeight),
+          text: rawText
+        };
+      };
 
+      const prevLayout = getLayout(activeIdx - 1);
+      const currLayout = getLayout(activeIdx);
+      const nextLayout = getLayout(activeIdx + 1);
+
+      // Render a block of lines
+      const drawBlock = (layout, yStart, alpha) => {
+        if (!layout) return;
         ctx.save();
         ctx.globalAlpha = Math.min(1, Math.max(0, alpha * gapAlpha));
-        ctx.font = isCaps ? `900 ${fsize}px ${fontName}` : `500 ${fsize}px ${fontName}`;
         ctx.fillStyle = txtColor;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.shadowColor = "rgba(0,0,0,0.55)";
         ctx.shadowBlur = 7;
         ctx.shadowOffsetY = 2;
-        ctx.fillText(drawText, lyricZoneX + lyricZoneW / 2, yPos);
+
+        layout.lines.forEach((lineText, idx) => {
+          ctx.font = `${fontWeight} ${layout.fontSize}px ${fontName}`;
+          const yPos = yStart + (idx + 0.5) * lineSpacing;
+          ctx.fillText(lineText, lyricZoneX + lyricZoneW / 2, yPos);
+        });
+
         ctx.restore();
       };
 
-      // Static 3-line layout: no scroll animation, instant swap, neighbors dimmed to 35%
-      drawLine(activeIdx - 1, centerY - lh, 0.35);
-      drawLine(activeIdx,     centerY,      1.00);
-      drawLine(activeIdx + 1, centerY + lh, 0.35);
+      if (currLayout) {
+        // Calculate heights
+        const currHeight = currLayout.lines.length * lineSpacing;
+        const prevHeight = prevLayout ? prevLayout.lines.length * lineSpacing : 0;
+
+        // Draw current centered at centerY
+        const currY = centerY - currHeight / 2;
+        drawBlock(currLayout, currY, 1.00);
+
+        // Draw previous block above
+        if (prevLayout) {
+          const prevY = currY - blockGap - prevHeight;
+          drawBlock(prevLayout, prevY, 0.35);
+        }
+
+        // Draw next block below
+        if (nextLayout) {
+          const nextY = currY + currHeight + blockGap;
+          drawBlock(nextLayout, nextY, 0.35);
+        }
+      }
     }
 
   }, [bgColor, txtColor, hlColor, font, anim, showLogo, fmt, coverImg, segments, curIdx, duration, playing, vinylColor, vinylImgs]);
