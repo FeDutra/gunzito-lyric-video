@@ -61,61 +61,103 @@ function normWord(w) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+function wrapToLines(ctx, text, maxWidth) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let currentLine = "";
+  
+  for (const word of words) {
+    const testLine = currentLine ? currentLine + " " + word : word;
+    const testWidth = ctx.measureText(testLine).width;
+    if (testWidth <= maxWidth) {
+      currentLine = testLine;
+    } else {
+      if (currentLine) {
+        lines.push(currentLine);
+      }
+      currentLine = word;
+    }
+  }
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+  return lines;
+}
+
+function balanceTwoLines(ctx, text, maxWidth) {
+  const words = text.split(/\s+/).filter(Boolean);
+  let bestSplit = 1;
+  let minDiff = Infinity;
+  for (let split = 1; split < words.length; split++) {
+    const line1 = words.slice(0, split).join(" ");
+    const line2 = words.slice(split).join(" ");
+    const w1 = ctx.measureText(line1).width;
+    const w2 = ctx.measureText(line2).width;
+    if (w1 <= maxWidth && w2 <= maxWidth) {
+      const diff = Math.abs(w1 - w2);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestSplit = split;
+      }
+    }
+  }
+  if (minDiff !== Infinity) {
+    return [words.slice(0, bestSplit).join(" "), words.slice(bestSplit).join(" ")];
+  }
+  return null;
+}
+
 function layoutLyricText(ctx, text, maxWidth, baseFontSize, fontName, fontWeight) {
   const MIN_FONT_SCALE = 0.72;
+  const ABSOLUTE_MIN_SCALE = 0.35; // Absolute minimum scaling factor to ensure fitting
   
-  for (let scale = 1.0; scale >= MIN_FONT_SCALE; scale -= 0.04) {
+  // 1. Try single line or 2 lines using scales from 1.0 down to MIN_FONT_SCALE
+  for (let scale = 1.0; scale >= MIN_FONT_SCALE; scale -= 0.02) {
     const fontSize = baseFontSize * scale;
     ctx.font = `${fontWeight} ${fontSize}px ${fontName}`;
     
-    const width = ctx.measureText(text).width;
-    if (width <= maxWidth) {
+    // Fits in one line?
+    if (ctx.measureText(text).width <= maxWidth) {
       return { lines: [text], fontSize };
     }
     
-    const words = text.split(/\s+/).filter(Boolean);
-    if (words.length > 1) {
-      let bestSplit = 1;
-      let minDiff = Infinity;
-      
-      for (let split = 1; split < words.length; split++) {
-        const line1 = words.slice(0, split).join(" ");
-        const line2 = words.slice(split).join(" ");
-        
-        const w1 = ctx.measureText(line1).width;
-        const w2 = ctx.measureText(line2).width;
-        
-        if (w1 <= maxWidth && w2 <= maxWidth) {
-          const diff = Math.abs(w1 - w2);
-          if (diff < minDiff) {
-            minDiff = diff;
-            bestSplit = split;
-          }
-        }
-      }
-      
-      if (minDiff !== Infinity) {
-        const line1 = words.slice(0, bestSplit).join(" ");
-        const line2 = words.slice(bestSplit).join(" ");
-        return { lines: [line1, line2], fontSize };
-      }
+    // Fits in 2 balanced lines?
+    const balanced = balanceTwoLines(ctx, text, maxWidth);
+    if (balanced) {
+      return { lines: balanced, fontSize };
+    }
+    
+    // Fits in standard wrapped 2 lines?
+    const wrapped = wrapToLines(ctx, text, maxWidth);
+    if (wrapped.length <= 2) {
+      return { lines: wrapped, fontSize };
     }
   }
   
-  const fontSize = baseFontSize * MIN_FONT_SCALE;
-  ctx.font = `${fontWeight} ${fontSize}px ${fontName}`;
-  const words = text.split(/\s+/).filter(Boolean);
-  
-  if (words.length >= 3) {
-    const n = words.length;
-    const chunk = Math.ceil(n / 3);
-    const line1 = words.slice(0, chunk).join(" ");
-    const line2 = words.slice(chunk, chunk * 2).join(" ");
-    const line3 = words.slice(chunk * 2).join(" ");
-    return { lines: [line1, line2, line3].filter(Boolean), fontSize };
+  // 2. Try 3 lines at MIN_FONT_SCALE
+  {
+    const fontSize = baseFontSize * MIN_FONT_SCALE;
+    ctx.font = `${fontWeight} ${fontSize}px ${fontName}`;
+    const wrapped = wrapToLines(ctx, text, maxWidth);
+    if (wrapped.length <= 3) {
+      return { lines: wrapped, fontSize };
+    }
   }
   
-  return { lines: [text], fontSize };
+  // 3. Scale down below MIN_FONT_SCALE (down to ABSOLUTE_MIN_SCALE) to fit in 3 lines
+  for (let scale = MIN_FONT_SCALE - 0.02; scale >= ABSOLUTE_MIN_SCALE; scale -= 0.02) {
+    const fontSize = baseFontSize * scale;
+    ctx.font = `${fontWeight} ${fontSize}px ${fontName}`;
+    const wrapped = wrapToLines(ctx, text, maxWidth);
+    if (wrapped.length <= 3) {
+      return { lines: wrapped, fontSize };
+    }
+  }
+  
+  // 4. Ultimate fallback: wrap at ABSOLUTE_MIN_SCALE
+  const fontSize = baseFontSize * ABSOLUTE_MIN_SCALE;
+  ctx.font = `${fontWeight} ${fontSize}px ${fontName}`;
+  return { lines: wrapToLines(ctx, text, maxWidth), fontSize };
 }
 
 function alignOfficialLyricsWithWords(officialText, whisperWords) {
