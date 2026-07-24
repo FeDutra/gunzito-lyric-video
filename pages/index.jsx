@@ -634,6 +634,8 @@ export default function App() {
     const { w, h } = fmt;
     if (canvas.width !== w) canvas.width = w;
     if (canvas.height !== h) canvas.height = h;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     const isWide = w > h;
 
     // ── Background ──────────────────────────────────────────────────────
@@ -1020,7 +1022,10 @@ export default function App() {
 
     // Capture canvas video stream ONLY — original audio muxed in FFmpeg step
     const vs = canvas.captureStream(30);
-    let mime = "video/webm;codecs=vp9";
+    
+    // Detect preferred codecs, prioritizing H.264 for hardware accelerated encoding
+    let mime = "video/webm;codecs=h264";
+    if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm;codecs=vp9";
     if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm;codecs=vp8";
     if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm";
     if (!MediaRecorder.isTypeSupported(mime) && MediaRecorder.isTypeSupported("video/mp4")) mime = "video/mp4"; // Safari fallback
@@ -1032,7 +1037,7 @@ export default function App() {
 
     console.log(`Iniciando MediaRecorder com mimeType: ${mime}`);
     try {
-      const rec = new MediaRecorder(vs, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+      const rec = new MediaRecorder(vs, { mimeType: mime, videoBitsPerSecond: 25_000_000 });
       rec.ondataavailable = e => { if (e.data.size > 0) chunks.current.push(e.data); };
 
       rec.onstop = async () => {
@@ -1087,8 +1092,8 @@ export default function App() {
             "-map", "1:a:0",
             "-r", "30",
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "18",
+            "-preset", "veryfast",
+            "-crf", "17",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-b:a", "192k",
