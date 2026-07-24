@@ -803,14 +803,15 @@ export default function App() {
 
     let gapAlpha = 1.0;
     if (activeIdx >= 0 && segments.length > 0) {
-      const curSeg = segments[activeIdx];
-      if (t > curSeg.end) {
-        const timeAfterEnd = t - curSeg.end;
-        const isLast = activeIdx === segments.length - 1;
-        // For the last segment, fade out much faster so the music note can appear
-        const fadeStart = isLast ? 0.1 : 0.8;
-        const fadeDuration = isLast ? 0.4 : 0.6;
-        gapAlpha = Math.max(0, Math.min(1, 1 - (timeAfterEnd - fadeStart) / fadeDuration));
+      const isLast = activeIdx === segments.length - 1;
+      if (isLast) {
+        const curSeg = segments[activeIdx];
+        if (t > curSeg.end) {
+          const timeAfterEnd = t - curSeg.end;
+          const fadeStart = 0.1;
+          const fadeDuration = 0.4;
+          gapAlpha = Math.max(0, Math.min(1, 1 - (timeAfterEnd - fadeStart) / fadeDuration));
+        }
       }
     }
 
