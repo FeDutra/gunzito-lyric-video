@@ -213,36 +213,95 @@ function matchGroupToSegments(G, S) {
   return matches;
 }
 
-function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDuration) {
-  const officialLines = parseOfficialLines(lyricsText);
-  if (!officialLines.length) return null;
-
-  const targetTokens = [];
-  officialLines.forEach((line, lineIndex) => {
-    line.split(/\s+/).forEach(original => {
-      const clean = normWord(original);
-      if (clean) targetTokens.push({ original, clean, lineIndex });
-    });
-  });
-
-  const sourceTokens = whisperWords
-    .map((word, sourceIndex) => ({
-      ...word,
-      sourceIndex,
-      clean: normWord(word.word),
-    }))
-    .filter(token => token.clean);
-
-  if (!targetTokens.length || !sourceTokens.length) return null;
-
-  // --- ETAPA A: ALINHAMENTO PRINCIPAL ---
-  const n = targetTokens.length;
-  const m = sourceTokens.length;
-  const gapTarget = -1.8;
-  const gapSource = -1.2;
+function alignLinesToSegments(officialLines, whisperSegments) {
+  const n = officialLines.length;
+  const m = whisperSegments.length;
+  if (!n || !m) return [];
 
   const dp = Array.from({ length: n + 1 }, () => new Float64Array(m + 1));
   const ptr = Array.from({ length: n + 1 }, () => new Uint8Array(m + 1));
+
+  const gapTarget = -0.8;
+  const gapSource = -0.5;
+
+  for (let i = 1; i <= n; i++) {
+    dp[i][0] = dp[i - 1][0] + gapTarget;
+    ptr[i][0] = 2; // UP
+  }
+  for (let j = 1; j <= m; j++) {
+    dp[0][j] = dp[0][j - 1] + gapSource;
+    ptr[0][j] = 3; // LEFT
+  }
+
+  for (let i = 1; i <= n; i++) {
+    const targetClean = normWord(officialLines[i - 1]);
+    for (let j = 1; j <= m; j++) {
+      const sourceClean = normWord(whisperSegments[j - 1].text);
+      const sim = similarity(targetClean, sourceClean);
+      let pairScore = sim >= 0.5 ? sim * 2.0 : -1.5;
+      // Tie-breaker penalty to prefer earlier occurrences in the audio for repetitive lyrics
+      pairScore -= (j - 1) * 0.006;
+
+      const diag = dp[i - 1][j - 1] + pairScore;
+      const up = dp[i - 1][j] + gapTarget;
+      const left = dp[i][j - 1] + gapSource;
+
+      if (diag >= up && diag >= left) {
+        dp[i][j] = diag;
+        ptr[i][j] = 1;
+      } else if (up >= left) {
+        dp[i][j] = up;
+        ptr[i][j] = 2;
+      } else {
+        dp[i][j] = left;
+        ptr[i][j] = 3;
+      }
+    }
+  }
+
+  const lineToSegment = new Array(n).fill(null);
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    const direction = ptr[i][j];
+    if (direction === 1) {
+      const sim = similarity(normWord(officialLines[i - 1]), normWord(whisperSegments[j - 1].text));
+      if (sim >= 0.35) {
+        lineToSegment[i - 1] = j - 1;
+      }
+      i--;
+      j--;
+    } else if (direction === 2) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+
+  let lastVal = -1;
+  for (let k = 0; k < n; k++) {
+    if (lineToSegment[k] !== null) {
+      if (lineToSegment[k] > lastVal) {
+        lastVal = lineToSegment[k];
+      } else {
+        lineToSegment[k] = null;
+      }
+    }
+  }
+
+  return lineToSegment;
+}
+
+function alignLocalWords(targetWords, localWords) {
+  const n = targetWords.length;
+  const m = localWords.length;
+  if (!n || !m) return null;
+
+  const dp = Array.from({ length: n + 1 }, () => new Float64Array(m + 1));
+  const ptr = Array.from({ length: n + 1 }, () => new Uint8Array(m + 1));
+
+  const gapTarget = -1.5;
+  const gapSource = -1.0;
 
   for (let i = 1; i <= n; i++) {
     dp[i][0] = dp[i - 1][0] + gapTarget;
@@ -254,11 +313,11 @@ function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDur
   }
 
   for (let i = 1; i <= n; i++) {
-    const target = targetTokens[i - 1].clean;
+    const target = normWord(targetWords[i - 1]);
     for (let j = 1; j <= m; j++) {
-      const source = sourceTokens[j - 1].clean;
+      const source = normWord(localWords[j - 1].word);
       const sim = similarity(target, source);
-      const pairScore = sim === 1 ? 3 : sim >= 0.75 ? 1.5 : sim >= 0.55 ? 0.25 : -2.2;
+      const pairScore = sim >= 0.55 ? sim * 3.0 : -2.0;
 
       const diag = dp[i - 1][j - 1] + pairScore;
       const up = dp[i - 1][j] + gapTarget;
@@ -278,82 +337,44 @@ function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDur
   }
 
   const targetToSource = new Array(n).fill(null);
-  let idxI = n;
-  let idxJ = m;
-
-  while (idxI > 0 || idxJ > 0) {
-    const direction = ptr[idxI][idxJ];
-    if (idxI > 0 && idxJ > 0 && direction === 1) {
-      const sim = similarity(targetTokens[idxI - 1].clean, sourceTokens[idxJ - 1].clean);
-      if (sim >= 0.55) {
-        targetToSource[idxI - 1] = idxJ - 1;
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    const direction = ptr[i][j];
+    if (direction === 1) {
+      const sim = similarity(normWord(targetWords[i - 1]), normWord(localWords[j - 1].word));
+      if (sim >= 0.35) {
+        targetToSource[i - 1] = j - 1;
       }
-      idxI--;
-      idxJ--;
-    } else if (idxI > 0 && (direction === 2 || idxJ === 0)) {
-      idxI--;
-    } else if (idxJ > 0) {
-      idxJ--;
+      i--;
+      j--;
+    } else if (direction === 2) {
+      i--;
     } else {
-      break;
+      j--;
     }
   }
 
-  // --- ETAPA B: DETECTAR LINHAS NÃO ALINHADAS E FILTRAR ÂNCORAS MONOTÔNICAS ---
-  const lineRanges = officialLines.map(() => ({ first: null, last: null, matches: 0 }));
-  targetTokens.forEach((token, targetIndex) => {
-    const sourceIndex = targetToSource[targetIndex];
-    if (sourceIndex === null) return;
-    const range = lineRanges[token.lineIndex];
-    range.first = range.first === null ? sourceIndex : Math.min(range.first, sourceIndex);
-    range.last = range.last === null ? sourceIndex : Math.max(range.last, sourceIndex);
-    range.matches++;
-  });
+  const matchedIndices = targetToSource.filter(x => x !== null);
+  if (matchedIndices.length === 0) return null;
 
-  const anchoredLines = [];
-  let lastAnchorEnd = 0;
+  const firstSourceIdx = Math.min(...matchedIndices);
+  const lastSourceIdx = Math.max(...matchedIndices);
 
-  for (let lineIndex = 0; lineIndex < officialLines.length; lineIndex++) {
-    const range = lineRanges[lineIndex];
-    const lineTokens = targetTokens.filter(t => t.lineIndex === lineIndex);
-    const lineTokensCount = lineTokens.length;
-    const confidence = range.matches / Math.max(1, lineTokensCount);
+  return {
+    start: localWords[firstSourceIdx].start,
+    end: localWords[lastSourceIdx].end,
+    confidence: matchedIndices.length / n,
+  };
+}
 
-    if (range.first !== null && range.last !== null) {
-      const startVal = sourceTokens[range.first].start;
-      const endVal = sourceTokens[range.last].end;
+function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDuration) {
+  const officialLines = parseOfficialLines(lyricsText);
+  if (!officialLines.length) return null;
 
-      if (startVal >= lastAnchorEnd && confidence >= 0.33) {
-        anchoredLines.push({
-          index: lineIndex,
-          first: range.first,
-          last: range.last,
-          start: startVal,
-          end: endVal,
-          source: "word-alignment",
-          confidence: parseFloat(confidence.toFixed(3)),
-        });
-        lastAnchorEnd = endVal;
-      } else {
-        range.first = null;
-        range.last = null;
-        range.matches = 0;
-      }
-    }
-  }
+  const lineToSegment = alignLinesToSegments(officialLines, whisperSegments);
 
-  const finalLines = officialLines.map((text, index) => {
-    const anchor = anchoredLines.find(a => a.index === index);
-    if (anchor) {
-      return {
-        text,
-        index,
-        start: anchor.start,
-        end: anchor.end,
-        source: "word-alignment",
-        confidence: anchor.confidence,
-      };
-    }
+  const finalSegments = officialLines.map((text, index) => {
     return {
       text,
       index,
@@ -364,15 +385,42 @@ function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDur
     };
   });
 
+  for (let lineIndex = 0; lineIndex < officialLines.length; lineIndex++) {
+    const segIdx = lineToSegment[lineIndex];
+    if (segIdx === null || segIdx === undefined) continue;
+
+    const matchedSeg = whisperSegments[segIdx];
+    const localWords = whisperWords.filter(
+      w => w.start >= matchedSeg.start - 0.5 && w.end <= matchedSeg.end + 0.5
+    );
+
+    if (localWords.length > 0) {
+      const targetWords = officialLines[lineIndex].split(/\s+/).filter(Boolean);
+      const alignedTimes = alignLocalWords(targetWords, localWords);
+      if (alignedTimes) {
+        finalSegments[lineIndex].start = alignedTimes.start;
+        finalSegments[lineIndex].end = alignedTimes.end;
+        finalSegments[lineIndex].source = "word-alignment";
+        finalSegments[lineIndex].confidence = alignedTimes.confidence;
+        continue;
+      }
+    }
+
+    finalSegments[lineIndex].start = matchedSeg.start;
+    finalSegments[lineIndex].end = matchedSeg.end;
+    finalSegments[lineIndex].source = "whisper-segment";
+    finalSegments[lineIndex].confidence = 0.8;
+  }
+
   let i = 0;
-  while (i < finalLines.length) {
-    if (finalLines[i].start !== null) {
+  while (i < finalSegments.length) {
+    if (finalSegments[i].start !== null) {
       i++;
       continue;
     }
 
     let startIdx = i;
-    while (i < finalLines.length && finalLines[i].start === null) {
+    while (i < finalSegments.length && finalSegments[i].start === null) {
       i++;
     }
     let endIdx = i - 1;
@@ -381,14 +429,14 @@ function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDur
     let nextAnchor = null;
 
     for (let k = startIdx - 1; k >= 0; k--) {
-      if (finalLines[k].start !== null) {
-        prevAnchor = finalLines[k];
+      if (finalSegments[k].start !== null) {
+        prevAnchor = finalSegments[k];
         break;
       }
     }
-    for (let k = endIdx + 1; k < finalLines.length; k++) {
-      if (finalLines[k].start !== null) {
-        nextAnchor = finalLines[k];
+    for (let k = endIdx + 1; k < finalSegments.length; k++) {
+      if (finalSegments[k].start !== null) {
+        nextAnchor = finalSegments[k];
         break;
       }
     }
@@ -396,91 +444,49 @@ function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDur
     const t_prev = prevAnchor ? prevAnchor.end : 0;
     const t_next = nextAnchor ? nextAnchor.start : (audioDuration > 0 ? audioDuration : (whisperWords.length ? whisperWords[whisperWords.length - 1].end : 300));
 
-    const group = finalLines.slice(startIdx, endIdx + 1);
-
-    // --- ETAPA C: PREENCHER REGIÕES COM WHISPER SEGMENTS ---
-    const candidateSegments = whisperSegments.filter(
-      s => s.start >= t_prev - 0.2 && s.end <= t_next + 0.2
-    );
-
-    if (candidateSegments.length > 0) {
-      const matches = matchGroupToSegments(group, candidateSegments);
-      matches.forEach((matchedSeg, groupIdx) => {
-        if (matchedSeg) {
-          const lineObj = finalLines[startIdx + groupIdx];
-          
-          let startVal = Math.max(t_prev + 0.05, matchedSeg.start);
-          let endVal = Math.min(t_next - 0.05, matchedSeg.end);
-          if (endVal <= startVal) endVal = startVal + 0.1;
-
-          lineObj.start = parseFloat(startVal.toFixed(2));
-          lineObj.end = parseFloat(endVal.toFixed(2));
-          lineObj.source = "whisper-segment";
-          lineObj.confidence = parseFloat(similarity(normWord(lineObj.text), normWord(matchedSeg.text)).toFixed(3));
-        }
-      });
+    let leftBound = t_prev;
+    let rightBound = t_next;
+    if (rightBound <= leftBound) {
+      rightBound = leftBound + 0.2 * (endIdx - startIdx + 2);
     }
 
-    // --- ETAPA D: DISTRIBUIÇÃO DETERMINÍSTICA COMO ÚLTIMO FALLBACK ---
-    let subIdx = startIdx;
-    while (subIdx <= endIdx) {
-      if (finalLines[subIdx].start !== null) {
-        subIdx++;
-        continue;
+    const totalDuration = rightBound - leftBound;
+    const subGroup = finalSegments.slice(startIdx, endIdx + 1);
+    const totalWeight = subGroup.reduce((sum, line) => sum + calculateLineWeight(line.text), 0);
+
+    let currentCursor = leftBound;
+    subGroup.forEach((lineObj, idx) => {
+      const w = calculateLineWeight(lineObj.text);
+      const rawDur = (w / totalWeight) * totalDuration;
+
+      let lineDur = rawDur;
+      let gapAfter = 0;
+      if (rawDur > 1.2) {
+        gapAfter = Math.min(1.5, rawDur * 0.15);
+        lineDur = rawDur - gapAfter;
       }
 
-      let subStart = subIdx;
-      while (subIdx <= endIdx && finalLines[subIdx].start === null) {
-        subIdx++;
+      const start = currentCursor + (idx === 0 ? 0.05 : 0.02);
+      let end = start + lineDur;
+      if (end > rightBound - 0.05) {
+        end = rightBound - 0.05;
       }
-      let subEnd = subIdx - 1;
-
-      let leftBound = subStart - 1 >= 0 ? finalLines[subStart - 1].end : t_prev;
-      let rightBound = subEnd + 1 < finalLines.length ? finalLines[subEnd + 1].start : t_next;
-
-      if (rightBound <= leftBound) {
-        rightBound = leftBound + 0.2 * (subEnd - subStart + 2);
+      if (end <= start) {
+        end = start + 0.1;
       }
 
-      const totalDuration = rightBound - leftBound;
-      const subGroup = finalLines.slice(subStart, subEnd + 1);
-      const totalWeight = subGroup.reduce((sum, line) => sum + calculateLineWeight(line.text), 0);
+      lineObj.start = parseFloat(start.toFixed(2));
+      lineObj.end = parseFloat(end.toFixed(2));
+      lineObj.source = "interpolated-between-anchors";
+      lineObj.confidence = 0.50;
 
-      let currentCursor = leftBound;
-      subGroup.forEach((lineObj, idx) => {
-        const w = calculateLineWeight(lineObj.text);
-        const rawDur = (w / totalWeight) * totalDuration;
-
-        let lineDur = rawDur;
-        let gapAfter = 0;
-        if (rawDur > 1.2) {
-          gapAfter = Math.min(1.5, rawDur * 0.15);
-          lineDur = rawDur - gapAfter;
-        }
-
-        const start = currentCursor + (idx === 0 ? 0.05 : 0.02);
-        let end = start + lineDur;
-        if (end > rightBound - 0.05) {
-          end = rightBound - 0.05;
-        }
-        if (end <= start) {
-          end = start + 0.1;
-        }
-
-        lineObj.start = parseFloat(start.toFixed(2));
-        lineObj.end = parseFloat(end.toFixed(2));
-        lineObj.source = "interpolated-between-anchors";
-        lineObj.confidence = 0.50;
-
-        currentCursor = end + gapAfter;
-      });
-    }
+      currentCursor = end + gapAfter;
+    });
   }
 
-  // --- POST-PROCESSING & PROTECTIONS ---
-  if (finalLines.length > 0) {
-    for (let k = 0; k < finalLines.length; k++) {
-      const cur = finalLines[k];
+  if (finalSegments.length > 0) {
+    for (let k = 0; k < finalSegments.length; k++) {
+      const cur = finalSegments[k];
       if (cur.end <= cur.start) {
         cur.end = parseFloat((cur.start + 0.1).toFixed(2));
       }
@@ -492,9 +498,9 @@ function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDur
       }
     }
 
-    for (let k = 0; k < finalLines.length - 1; k++) {
-      const cur = finalLines[k];
-      const nxt = finalLines[k + 1];
+    for (let k = 0; k < finalSegments.length - 1; k++) {
+      const cur = finalSegments[k];
+      const nxt = finalSegments[k + 1];
       if (cur.end >= nxt.start) {
         cur.end = parseFloat((nxt.start - 0.05).toFixed(2));
         if (cur.end <= cur.start) {
@@ -505,8 +511,8 @@ function alignOfficialLyrics(lyricsText, whisperWords, whisperSegments, audioDur
   }
 
   return {
-    segments: finalLines,
-    confidence: parseFloat((anchoredLines.length / officialLines.length).toFixed(3))
+    segments: finalSegments,
+    confidence: parseFloat((lineToSegment.filter(x => x !== null).length / officialLines.length).toFixed(3))
   };
 }
 
