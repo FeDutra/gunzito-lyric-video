@@ -794,9 +794,26 @@ export default function App() {
           break;
         }
       }
+      // If we are past the end of the last segment, and the fade-out has finished,
+      // clear activeIdx so no lyrics are rendered/computed.
+      if (activeIdx === segments.length - 1 && t > segments[activeIdx].end + 0.5) {
+        activeIdx = -1;
+      }
     }
 
     let gapAlpha = 1.0;
+    if (activeIdx >= 0 && segments.length > 0) {
+      const curSeg = segments[activeIdx];
+      if (t > curSeg.end) {
+        const timeAfterEnd = t - curSeg.end;
+        const isLast = activeIdx === segments.length - 1;
+        // For the last segment, fade out much faster so the music note can appear
+        const fadeStart = isLast ? 0.1 : 0.8;
+        const fadeDuration = isLast ? 0.4 : 0.6;
+        gapAlpha = Math.max(0, Math.min(1, 1 - (timeAfterEnd - fadeStart) / fadeDuration));
+      }
+    }
+
     let showMusicNote = false;
     let noteAlpha = 0;
 
@@ -809,10 +826,10 @@ export default function App() {
         showMusicNote = true;
         const tt = firstStart - 1.5 - t;
         noteAlpha = t < 1.0 ? t / 1.0 : Math.min(1.0, tt / 1.0);
-      } else if (t > lastEnd + 1.0) {
+      } else if (t > lastEnd + 0.2) {
         // Outro instrumental: show musical note 🎵
         showMusicNote = true;
-        noteAlpha = Math.min(1.0, (t - (lastEnd + 1.0)) / 1.0);
+        noteAlpha = Math.min(1.0, (t - (lastEnd + 0.2)) / 0.8);
       } else if (activeIdx < 0) {
         // ONLY check for instrumental solo when NO verse is active (activeIdx === -1)
         // Find previous and next segments around current time t
