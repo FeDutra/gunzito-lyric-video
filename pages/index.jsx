@@ -345,6 +345,8 @@ export default function App() {
   const [vinylImgs, setVinylImgs]   = useState({});
   const [logoImg, setLogoImg]       = useState(null);
 
+  const [browserWarning, setBrowserWarning] = useState("");
+
   useEffect(() => {
     const loaded = {};
     VINYL_COLORS.forEach(v => {
@@ -359,6 +361,14 @@ export default function App() {
     const lImg = new Image();
     lImg.onload = () => setLogoImg(lImg);
     lImg.src = "/logo-gunzito.png";
+
+    // Detect browser limits (Safari / crossOriginIsolated)
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    if (isSafari) {
+      setBrowserWarning("⚠️ Você está usando o Safari. O Safari possui limitações na gravação de canvas e processamento local. Se a exportação falhar, recomendamos usar o Google Chrome ou Microsoft Edge no computador.");
+    } else if (typeof window !== "undefined" && !window.crossOriginIsolated) {
+      setBrowserWarning("⚠️ O isolamento de origem (Cross-Origin Isolation) está desativado neste ambiente. O FFmpeg requer este isolamento para funcionar. Se a exportação falhar, certifique-se de que os cabeçalhos COOP/COEP estão configurados no servidor.");
+    }
   }, []);
   const [transcribeMsg, setTranscribeMsg] = useState("");
   const [transcribeErr, setTranscribeErr] = useState("");
@@ -449,23 +459,13 @@ export default function App() {
       if (!r.ok) throw new Error(data.error || "Erro " + r.status);
 
       let segs = null;
-      if (data.isAligned && data.segments && data.segments.length > 0) {
+      if (data.segments && data.segments.length > 0) {
         segs = data.segments.map(s => ({
           start: s.start,
           end: s.end,
           text: s.text,
           key: keyWord(s.text)
         }));
-      } else if (data.words && data.words.length > 0) {
-        segs = splitSegmentsFromWords(data.words);
-      } else if (data.segments && data.segments.length > 0) {
-        const rawSegs = data.segments.map(s => ({
-          start: s.start,
-          end:   s.end,
-          text:  s.text,
-          key:   keyWord(s.text),
-        }));
-        segs = splitSegments(rawSegs, duration);
       }
 
       // Clean existing emojis and enforce 🎶 only at the start of the first intro verse
@@ -474,19 +474,6 @@ export default function App() {
           s.text = s.text.replace(/🎶/g, "").trim();
         });
         segs[0].text = "🎶 " + segs[0].text;
-      }
-
-      // Fix segment ends: extend each verse to cover right up to the next verse's start.
-      // This prevents artificial gaps (from short word timestamps) from falsely triggering
-      // the musical note emoji mid-song.
-      if (segs && segs.length > 1) {
-        for (let i = 0; i < segs.length - 1; i++) {
-          const gapToNext = segs[i + 1].start - segs[i].end;
-          // If the natural gap to the next start is less than 15s, extend end to fill it
-          if (gapToNext < 15.0) {
-            segs[i].end = segs[i + 1].start - 0.05;
-          }
-        }
       }
 
       setSegments(segs);
@@ -853,102 +840,177 @@ export default function App() {
     const canvas = canvasRef.current; if (!canvas) return;
     if (!audioFile) { alert("❌ Selecione um áudio antes de exportar!"); return; }
 
+    if (typeof MediaRecorder === "undefined") {
+      alert("❌ Seu navegador não suporta gravação de mídia (MediaRecorder é indefinido).\nPor favor, utilize o Google Chrome ou Microsoft Edge no computador para realizar a exportação.");
+      return;
+    }
+
+    if (!window.crossOriginIsolated) {
+      alert("❌ O isolamento de origem (Cross-Origin Isolation) está desativado neste navegador/ambiente.\nO FFmpeg requer cabeçalhos COOP/COEP ativos para rodar com multithreading/SharedArrayBuffer.\nCertifique-se de que os cabeçalhos do servidor estão configurados corretamente ou use o Chrome/Edge.");
+      return;
+    }
+
+    const a = audioRef.current;
+    if (!a) {
+      alert("❌ Elemento de áudio não encontrado!");
+      return;
+    }
+
     setExporting(true); setExpPct(0); setExpURL(null); chunks.current = [];
 
     // Init analyser so waveform is live during export recording
     if (!analyserRef.current) setupAnalyser();
     if (audioCtxRef.current?.state === "suspended") await audioCtxRef.current.resume();
 
-    // 1. Capture canvas video stream ONLY — original audio muxed in FFmpeg step
+    // Capture canvas video stream ONLY — original audio muxed in FFmpeg step
     const vs = canvas.captureStream(30);
     let mime = "video/webm;codecs=vp9";
+    if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm;codecs=vp8";
+    if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm";
+    if (!MediaRecorder.isTypeSupported(mime) && MediaRecorder.isTypeSupported("video/mp4")) mime = "video/mp4"; // Safari fallback
+    
+    let tempVideoFile = "video-temp.webm";
+    if (mime.includes("mp4")) {
+      tempVideoFile = "video-temp.mp4";
+    }
+
+    console.log(`Iniciando MediaRecorder com mimeType: ${mime}`);
     try {
-      if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm;codecs=vp8";
-      if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm";
-      if (!MediaRecorder.isTypeSupported(mime)) mime = "video/mp4"; // Safari iOS fallback
-      
       const rec = new MediaRecorder(vs, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
       rec.ondataavailable = e => { if (e.data.size > 0) chunks.current.push(e.data); };
 
       rec.onstop = async () => {
         setTranscoding(true);
-      setExpPct(5);
-      try {
-        const webmBlob = new Blob(chunks.current, { type: mime });
+        setExpPct(5);
+        let ffmpeg = null;
+        try {
+          const webmBlob = new Blob(chunks.current, { type: mime });
 
-        const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-        const { toBlobURL, fetchFile } = await import("@ffmpeg/util");
+          const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+          const { toBlobURL, fetchFile } = await import("@ffmpeg/util");
 
-        const ffmpeg = new FFmpeg();
+          ffmpeg = new FFmpeg();
 
-        ffmpeg.on("progress", ({ progress }) => {
-          setExpPct(Math.round(5 + progress * 90));
+          ffmpeg.on("log", ({ message }) => {
+            console.log("[FFmpeg Log]", message);
+          });
+
+          ffmpeg.on("progress", ({ progress }) => {
+            setExpPct(Math.round(5 + progress * 90));
+          });
+
+          // Load FFmpeg WASM from own domain
+          const baseURL = `${window.location.origin}/ffmpeg`;
+          console.log("Iniciando carregamento do FFmpeg...");
+          await ffmpeg.load({
+            coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+            wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+          });
+          console.log("FFmpeg carregado com sucesso.");
+
+          console.log("Escrevendo arquivos no sistema virtual do FFmpeg...");
+          await ffmpeg.writeFile(tempVideoFile, await fetchFile(webmBlob));
+          await ffmpeg.writeFile("audio.dat",  await fetchFile(audioFile));
+
+          console.log("Executando mixagem do FFmpeg...");
+          await ffmpeg.exec([
+            "-i", tempVideoFile,
+            "-i", "audio.dat",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "48000",
+            "-shortest",
+            "-movflags", "+faststart",
+            "resultado.mp4"
+          ]);
+          console.log("Comando finalizado.");
+
+          const data = await ffmpeg.readFile("resultado.mp4");
+          if (!data || data.length === 0) {
+            throw new Error("O arquivo 'resultado.mp4' não foi criado ou está vazio.");
+          }
+
+          console.log(`Muxing completo! Tamanho: ${data.length} bytes.`);
+          const mp4Blob = new Blob([data.buffer], { type: "video/mp4" });
+          setExpURL(URL.createObjectURL(mp4Blob));
+          setExpPct(100);
+        } catch (err) {
+          console.error("Transcode error during Muxing:", err);
+          alert("❌ Conversão para MP4 falhou.\n" + (err?.message || String(err)));
+          setExpURL(null);
+          setExpPct(0);
+        } finally {
+          if (ffmpeg) {
+            try {
+              await ffmpeg.deleteFile(tempVideoFile);
+              await ffmpeg.deleteFile("audio.dat");
+              await ffmpeg.deleteFile("resultado.mp4");
+            } catch (cleanupErr) {
+              console.warn("Aviso ao limpar arquivos virtuais do FFmpeg:", cleanupErr);
+            }
+          }
+          setTranscoding(false);
+          setExporting(false);
+        }
+      };
+
+      // Progress interval during recording
+      const dur = duration || a.duration || 180;
+      const progressInterval = setInterval(() => {
+        if (a) {
+          const elapsed = a.currentTime;
+          setExpPct(Math.min(95, Math.round((elapsed / dur) * 95)));
+        }
+      }, 500);
+
+      // Event listener to handle the end of recording when audio ends
+      const stopRecordingFlow = () => {
+        clearInterval(progressInterval);
+        a.removeEventListener("ended", stopRecordingFlow);
+        a.removeEventListener("pause", stopRecordingFlow);
+        
+        if (rec.state !== "inactive") {
+          rec.stop();
+        }
+        
+        a.pause();
+        a.currentTime = 0;
+        setPlaying(false);
+      };
+
+      a.addEventListener("ended", stopRecordingFlow);
+      a.addEventListener("pause", stopRecordingFlow);
+
+      // Start recording
+      rec.start(100);
+      a.currentTime = 0;
+
+      a.play()
+        .then(() => {
+          setPlaying(true);
+          console.log("Gravação iniciada.");
+        })
+        .catch(err => {
+          console.error("Erro ao reproduzir áudio:", err);
+          clearInterval(progressInterval);
+          a.removeEventListener("ended", stopRecordingFlow);
+          a.removeEventListener("pause", stopRecordingFlow);
+          if (rec.state !== "inactive") {
+            rec.stop();
+          }
+          alert("❌ Não foi possível iniciar a reprodução de áudio. Por favor, clique na página e tente novamente.");
+          setExporting(false);
         });
 
-        // Load FFmpeg WASM via toBlobURL from CDN (works in both dev and production hosting)
-        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-        });
-
-        // Write canvas video + original audio to FFmpeg virtual FS
-        await ffmpeg.writeFile("video.webm", await fetchFile(webmBlob));
-        await ffmpeg.writeFile("audio.dat",  await fetchFile(audioFile));
-
-        // Mux: canvas video + original audio → MP4 (H.264 + AAC)
-        await ffmpeg.exec([
-          "-i", "video.webm",
-          "-i", "audio.dat",
-          "-map", "0:v:0",
-          "-map", "1:a:0",
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-crf", "18",
-          "-pix_fmt", "yuv420p",
-          "-c:a", "aac",
-          "-b:a", "192k",
-          "-shortest",
-          "-movflags", "+faststart",
-          "output.mp4"
-        ]);
-
-        const data = await ffmpeg.readFile("output.mp4");
-        const mp4Blob = new Blob([data.buffer], { type: "video/mp4" });
-        setExpURL(URL.createObjectURL(mp4Blob));
-        setExpPct(100);
-      } catch (err) {
-        console.error("Transcode error:", err);
-        alert("❌ Conversão MP4 falhou.\n" + (err?.message || String(err)));
-        setExpURL(URL.createObjectURL(new Blob(chunks.current, { type: mime })));
-      } finally {
-        setTranscoding(false);
-        setExporting(false);
-      }
-    };
-
-    rec.start(100);
-
-    // Play audio from beginning for the recording
-    const a = audioRef.current;
-    if (a) { a.currentTime = 0; a.play(); setPlaying(true); }
-
-    const dur = duration || 180;
-    const startTs = Date.now();
-    const iv = setInterval(() => {
-      const elapsed = (Date.now() - startTs) / 1000;
-      setExpPct(Math.min(95, Math.round((elapsed / dur) * 95)));
-    }, 500);
-
-    setTimeout(() => {
-      clearInterval(iv);
-      rec.stop();
-      if (a) { a.pause(); a.currentTime = 0; }
-      setPlaying(false);
-    }, (dur + 1.0) * 1000);
     } catch (e) {
-      console.error(e);
-      alert("❌ O seu navegador não suporta a exportação nativa de vídeo (MediaRecorder) neste formato.\\nTente usar o Google Chrome no computador.\\nErro: " + e.message);
+      console.error("Erro ao iniciar gravador:", e);
+      alert("❌ Ocorreu um erro ao iniciar a gravação: " + e.message);
       setExporting(false);
       setTranscoding(false);
     }
@@ -1253,6 +1315,21 @@ export default function App() {
               <div><span style={{color:Y,fontWeight:700}}>Duração:</span> ~{Math.round(duration)}s</div>
               <div><span style={{color:G,fontWeight:700}}>Áudio:</span> incluído ✓</div>
             </div>
+            {browserWarning && (
+              <div style={{
+                padding: 10,
+                borderRadius: 8,
+                background: "rgba(255, 165, 0, 0.1)",
+                border: "1px solid orange",
+                color: "orange",
+                fontSize: 10,
+                fontFamily: "Arial",
+                lineHeight: 1.4,
+                marginBottom: 11
+              }}>
+                {browserWarning}
+              </div>
+            )}
             {!exporting && !expURL && (
               <Btn onClick={startExport} style={{ background:P, color:"#fff", width:"100%", fontSize:15, padding:"14px 0" }}>
                 🎬 GRAVAR VÍDEO + ÁUDIO
