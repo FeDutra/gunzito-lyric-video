@@ -532,6 +532,10 @@ export default async function handler(req, res) {
     const audioFile = Array.isArray(fileField) ? fileField[0] : fileField;
     if (!audioFile) return res.status(400).json({ error: "Nenhum arquivo enviado" });
 
+    if (audioFile.size > 25 * 1024 * 1024) {
+      return res.status(400).json({ error: "O arquivo excede o limite de 25MB da IA (Groq). Por favor, converta seu áudio para .mp3 antes de enviar." });
+    }
+
     const rawLyrics = Array.isArray(fields.lyrics) ? fields.lyrics[0] : fields.lyrics;
     const lyricsText = typeof rawLyrics === "string" ? rawLyrics.trim() : "";
 
@@ -542,7 +546,7 @@ export default async function handler(req, res) {
       timestamp_granularities: ["word", "segment"],
       temperature: 0.0,
       language: "pt",
-    });
+    }, { timeout: 45000 }); // 45 seconds timeout for Groq API
 
     const audioDuration = Number(transcription.duration || 0);
 
